@@ -56,21 +56,23 @@ VAR_ID_LIST = [
 
 
 class MsgType(IntEnum):
-    MSG_LOG_DATA        = 0x01  # FOC -> PC
-    MSG_SET_MASK        = 0x02  # PC -> FOC
-    MSG_START_LOG       = 0x03  # PC -> FOC
-    MSG_STOP_LOG        = 0x04  # PC -> FOC
-    MSG_SET_PID         = 0x05  # PC -> FOC
-    MSG_GET_PID         = 0x06  # PC -> FOC
-    MSG_PID_REPLY       = 0x07  # FOC -> PC
-    MSG_SET_VAR         = 0x08  # PC -> FOC
-    MSG_GET_VAR         = 0x09  # PC -> FOC
-    MSG_VAR_REPLY       = 0x0A  # FOC -> PC
-    MSG_FLASH_SAVE      = 0x0B  # PC -> FOC
-    MSG_FLASH_LOAD      = 0x0C  # PC -> FOC
-    MSG_SET_STATE       = 0x0D  # PC -> FOC
-    MSG_GET_STATE       = 0x0E  # PC -> FOC
-    MSG_STATE_REPLY     = 0x0F  # FOC -> PC
+    MSG_GET_VERSION     = 0x00  # PC -> FOC
+    MSG_VERSION_REPLY   = 0x01  # FOC -> PC
+    MSG_LOG_DATA        = 0x02  # FOC -> PC
+    MSG_SET_MASK        = 0x03  # PC -> FOC
+    MSG_START_LOG       = 0x04  # PC -> FOC
+    MSG_STOP_LOG        = 0x05  # PC -> FOC
+    MSG_SET_PID         = 0x06  # PC -> FOC
+    MSG_GET_PID         = 0x07  # PC -> FOC
+    MSG_PID_REPLY       = 0x08  # FOC -> PC
+    MSG_SET_VAR         = 0x09  # PC -> FOC
+    MSG_GET_VAR         = 0x0A  # PC -> FOC
+    MSG_VAR_REPLY       = 0x0B  # FOC -> PC
+    MSG_FLASH_SAVE      = 0x0C  # PC -> FOC
+    MSG_FLASH_LOAD      = 0x0D  # PC -> FOC
+    MSG_SET_STATE       = 0x0E  # PC -> FOC
+    MSG_GET_STATE       = 0x0F  # PC -> FOC
+    MSG_STATE_REPLY     = 0x10  # FOC -> PC
 
     MSG_UNKNOWN_TYPE    = 0xFA  # FOC -> PC
     MSG_INVALID_PAYLOAD = 0xFB  # FOC -> PC
