@@ -1,4 +1,5 @@
-PORT = 'COM3'
+
+PORT = 'COM4'
 BAUDRATE = 115200
 TIMEOUT = 0.1
 
@@ -9,8 +10,6 @@ LOG_PLOT_UPDATE_PERIOD_S = 0.1
 
 LOG_BATCH_PACKETS = 20
 
-SOF1 = 0xAA
-SOF2 = 0x55
 
 log_isrunning = False
 log_mask = 0
