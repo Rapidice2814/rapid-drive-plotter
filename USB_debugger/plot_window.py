@@ -1,283 +1,116 @@
 import queue
-from collections import defaultdict, deque
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLineEdit,
-    QTextEdit,
-    QDockWidget,
-    QLabel,
-    QPushButton,
-    QCheckBox,
-    QScrollArea,
-)
-import pyqtgraph as pg
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMainWindow
 
-from protocol_codec import DecodedLogPayload
-from protocol_definitions import FOC_USB_DEBUG_SIGNAL_LIST
+from protocol_codec import LogPayload, PIDPayload, Packet, TextPayload, VarPayload
+from protocol_definitions import MsgType
 
+from ui.command_panel import CommandDock
+from ui.pid_panel import PidDock
+from ui.signal_selector_panel import SignalSelectorDock
+from ui.plot_panel import PlotPanel
+from ui.control_panel import ControlDock
+from ui.variable_panel import VarDock
+from ui.connect_panel import SerialConnectPanel
 
 class PlotWindow(QMainWindow):
-    def __init__(self, on_command: Callable[[str], None]):
+    def __init__(self, on_command: Callable[[Packet], None]):
         super().__init__()
         self.on_command = on_command
 
         self.setWindowTitle("Serial Plotter")
         self.resize(1400, 900)
 
-        self.data_buffers = defaultdict(lambda: deque(maxlen=100000))
-        self.time_buffer = deque(maxlen=100000)
-        self.curves = {}
-        self.active_signals = []
-
-        self._payload_queue = queue.Queue()
-
-        self.signal_meta = [
-            s for s in FOC_USB_DEBUG_SIGNAL_LIST if s["name"]
-        ]
-        self.signal_checkboxes = {}
-        self.current_mask = 0
-
         self._build_ui()
-        self._build_timer()
-        self._update_mask_from_ui(send=False)
 
     def _build_ui(self):
-        plot_widget = QWidget()
-        plot_layout = QVBoxLayout(plot_widget)
+        self.plot_panel = PlotPanel(self)
+        self.setCentralWidget(self.plot_panel)
 
-        self.graph = pg.GraphicsLayoutWidget()
-        plot_layout.addWidget(self.graph)
-
-        self.plot = self.graph.addPlot(title="Live Data")  # type: ignore[attr-defined]
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.plot.setDownsampling(auto=True, mode="peak")
-        self.plot.setClipToView(True)
-        self.plot.addLegend()
-
-        self.setCentralWidget(plot_widget)
-
-        ################## COMMAND PANEL ##################
-        self.command_dock = QDockWidget("Command Line", self)
-        self.command_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
-            | Qt.DockWidgetArea.BottomDockWidgetArea
-        )
-
-        command_panel = QWidget()
-        command_layout = QVBoxLayout(command_panel)
-
-        self.command_input = QLineEdit()
-        self.command_input.setPlaceholderText("Type command and press Enter...")
-        self.command_input.returnPressed.connect(self._send_command)
-
-        self.command_log = QTextEdit()
-        self.command_log.setReadOnly(True)
-
-        command_layout.addWidget(QLabel("Command:"))
-        command_layout.addWidget(self.command_input)
-        command_layout.addWidget(QLabel("Output:"))
-        command_layout.addWidget(self.command_log)
-
-        self.command_dock.setWidget(command_panel)
+        self.command_dock = CommandDock(self._handle_text_command, self)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.command_dock)
 
-        ################# CONTROL PANEL ##################
-        self.control_dock = QDockWidget("Controls", self)
-        self.control_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
+        # self.connect_dock = SerialConnectPanel(self.start_serial, self)
+        # self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.connect_dock)
+
+        self.signal_dock = SignalSelectorDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.signal_dock)
+
+        self.pid_dock = PidDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pid_dock)
+
+        self.control_dock = ControlDock(
+            on_command=self.on_command,
+            on_plot_reset=self._back_to_home,
+            parent=self,
         )
-
-        control_panel = QWidget()
-        control_layout = QVBoxLayout(control_panel)
-
-        self.btn_start = QPushButton("Send Start")
-        self.btn_start.clicked.connect(lambda: self._send_predefined_command("start"))
-        control_layout.addWidget(self.btn_start)
-
-        self.btn_stop = QPushButton("Send Stop")
-        self.btn_stop.clicked.connect(lambda: self._send_predefined_command("stop"))
-        control_layout.addWidget(self.btn_stop)
-
-        
-        self.btn_home = QPushButton("Reset Zoom")
-        self.btn_home.clicked.connect(self._back_to_home)
-        control_layout.addWidget(self.btn_home)
-
-
-        self.btn_mo = QPushButton("Open loop control")
-        self.btn_mo.clicked.connect(lambda: self._send_predefined_command("Mo"))
-        control_layout.addWidget(self.btn_mo)
-    
-        self.btn_ms = QPushButton("Speed control")
-        self.btn_ms.clicked.connect(lambda: self._send_predefined_command("Ms"))
-        control_layout.addWidget(self.btn_ms)
-
-        self.btn_mp = QPushButton("Position control")
-        self.btn_mp.clicked.connect(lambda: self._send_predefined_command("Mp"))
-        control_layout.addWidget(self.btn_mp)
-
-
-        self.btn_sq0 = QPushButton("Sq0")
-        self.btn_sq0.clicked.connect(lambda: self._send_predefined_command("Sq0"))
-        control_layout.addWidget(self.btn_sq0)
-
-        self.btn_sq1000 = QPushButton("Sq1000")
-        self.btn_sq1000.clicked.connect(lambda: self._send_predefined_command("Sq1000"))
-        control_layout.addWidget(self.btn_sq1000)
-
-        self.btn_ss0 = QPushButton("Ss0")
-        self.btn_ss0.clicked.connect(lambda: self._send_predefined_command("Ss0"))
-        control_layout.addWidget(self.btn_ss0)
-
-        self.btn_ss1 = QPushButton("Ss1")
-        self.btn_ss1.clicked.connect(lambda: self._send_predefined_command("Ss1"))
-        control_layout.addWidget(self.btn_ss1)
-
-        self.btn_sp0 = QPushButton("Sp1000")
-        self.btn_sp0.clicked.connect(lambda: self._send_predefined_command("Sp1000"))
-        control_layout.addWidget(self.btn_sp0)
-
-        self.btn_sp1 = QPushButton("Sp3000")
-        self.btn_sp1.clicked.connect(lambda: self._send_predefined_command("Sp3000"))
-        control_layout.addWidget(self.btn_sp1)
-
-
-
-        control_layout.addStretch()
-
-        self.control_dock.setWidget(control_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.control_dock)
 
-        ################# SIGNAL PANEL ##################
-        self.signals_dock = QDockWidget("Signals", self)
-        self.signals_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
-        )
+        self.var_dock = VarDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.var_dock)
 
-        signals_panel = QWidget()
-        signals_layout = QVBoxLayout(signals_panel)
+        self.tabifyDockWidget(self.control_dock, self.pid_dock)
+        self.tabifyDockWidget(self.control_dock, self.var_dock)
+        self.control_dock.raise_()
 
-        self.mask_label = QLabel("Mask: 0x00000000")
-        self.mask_label.setWordWrap(True)
-        signals_layout.addWidget(self.mask_label)
+    def enqueue_log(self, payload: LogPayload):
+        self.plot_panel.enqueue_log(payload)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+    def enqueue_text(self, payload: str):
+        self.command_dock.enqueue_text(payload)
 
-        list_container = QWidget()
-        self.signals_list_layout = QVBoxLayout(list_container)
+    def on_reply(self, packet: Packet):
+        if packet.msg_type == MsgType.MSG_TEXT_REPLY and isinstance(packet.data, TextPayload):
+            self.enqueue_text(packet.data.text)
 
-        for sig in self.signal_meta:
-            bit = int(sig["bit"])
-            name = sig["name"]
-            cb = QCheckBox(f"bit {bit}: {name}")
-            cb.setChecked(False)
-            cb.stateChanged.connect(self._on_signal_toggled)
-            self.signal_checkboxes[bit] = cb
-            self.signals_list_layout.addWidget(cb)
-
-        self.signals_list_layout.addStretch()
-        scroll.setWidget(list_container)
-
-        signals_layout.addWidget(scroll)
-        self.signals_dock.setWidget(signals_panel)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.signals_dock)
-
-    def _build_timer(self):
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._drain_queue_and_update)
-        self.timer.start(50)
-
-    def enqueue(self, payload: DecodedLogPayload):
-        self._payload_queue.put(payload)
-
-    def _send_command(self):
-        cmd = self.command_input.text().strip()
-        if not cmd:
-            return
-        self.on_command(cmd)
-        self.command_log.append(f"> {cmd}")
-        self.command_input.clear()
-
-    def _send_predefined_command(self, cmd: str):
-        self.on_command(cmd)
-        self.command_log.append(f"> {cmd}")
-
-    def _back_to_home(self):
-        self.plot.autoRange()
-
-    def _on_signal_toggled(self):
-        self._update_mask_from_ui(send=True)
-
-    def _update_mask_from_ui(self, send: bool):
-        mask = 0
-        for sig in self.signal_meta:
-            bit = int(sig["bit"])
-            cb = self.signal_checkboxes[bit]
-            if cb.isChecked():
-                mask |= (1 << bit)
-
-        self.current_mask = mask
-        self.mask_label.setText(f"Mask: 0x{mask:08X}")
-
-        if send:
-            self._send_predefined_command("stop")
-            self._send_predefined_command(f"setmask 0x{mask:08X}")
-            self._send_predefined_command("start")
-
-    def _drain_queue_and_update(self):
-        updated = False
-        while True:
-            try:
-                payload = self._payload_queue.get_nowait()
-            except queue.Empty:
-                break
-            self._handle_log_payload(payload)
-            updated = True
-
-        if updated:
-            self._update_plot()
-
-    def _handle_log_payload(self, payload: DecodedLogPayload):
-        self.time_buffer.extend(
-            range(payload.timestamp, payload.timestamp + payload.sample_count)
-        )
-
-        for name, values in payload.signals.items():
-            self.data_buffers[name].extend(values)
-
-        self.active_signals = list(payload.signals.keys())
-        self._refresh_curves()
-
-    def _refresh_curves(self):
-        for name in self.active_signals:
-            if name not in self.curves:
-                self.curves[name] = self.plot.plot(
-                    pen=pg.intColor(len(self.curves)),
-                    name=name,
+        elif packet.msg_type == MsgType.MSG_PID_REPLY and isinstance(packet.data, PIDPayload):
+            if packet.data.kp is not None and packet.data.ki is not None and packet.data.kd is not None:
+                self.enqueue_text(str(packet.data))
+                self.pid_dock.set_pid_values(
+                    packet.data.controller_id,
+                    packet.data.kp,
+                    packet.data.ki,
+                    packet.data.kd,
                 )
 
-        for name in list(self.curves.keys()):
-            if name not in self.active_signals:
-                self.plot.removeItem(self.curves[name])
-                del self.curves[name]
+        elif packet.msg_type == MsgType.MSG_VAR_REPLY and isinstance(packet.data, VarPayload):
+            if packet.data.value is not None:
+                self.enqueue_text(str(packet.data))
+                self.var_dock.set_var_value(packet.data.var_id, float(packet.data.value))
 
-    def _update_plot(self):
-        if not self.active_signals or not self.time_buffer:
+    def _handle_text_command(self, cmd: str):
+        cmd = cmd.strip()
+        if not cmd:
             return
 
-        x = list(self.time_buffer)
-        for name in self.active_signals:
-            y = list(self.data_buffers[name])
-            n = min(len(x), len(y))
-            if n > 0 and name in self.curves:
-                self.curves[name].setData(x[-n:], y[-n:])
+        # if cmd.lower() == "3":
+        #     self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=0x080000EF))
+        #     return
+
+        # if cmd.lower() == "4":
+        #     self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=0x000000EF))
+        #     return
+
+        # if cmd.lower() == "12":
+        #     pkg = Packet(msg_type=MsgType.MSG_SET_VAR, data=VarPayload(var_id=4, value=float(2.0)))
+        #     self.on_command(pkg)
+        #     return
+
+        # if cmd.lower() == "13":
+        #     pkg = Packet(msg_type=MsgType.MSG_SET_VAR, data=VarPayload(var_id=4, value=float(5.0)))
+        #     self.on_command(pkg)
+        #     return
+
+        # if cmd.lower() == "10":
+        #     pkg = Packet(msg_type=MsgType.MSG_GET_VAR, data=VarPayload(var_id=4, value=None))
+        #     self.on_command(pkg)
+        #     return
+
+        text_payload = TextPayload(text=cmd)
+        pkg = Packet(msg_type=MsgType.MSG_TEXT_COMMAND, data=text_payload)
+        self.on_command(pkg)
+
+    def _back_to_home(self):
+        self.plot_panel.reset_zoom()

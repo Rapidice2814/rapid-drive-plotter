@@ -8,7 +8,7 @@ from typing import Optional, cast
 import h5py
 import numpy as np
 
-from protocol_codec import DecodedLogPayload
+from protocol_codec import LogPayload
 
 
 def get_log_filename() -> Path:
@@ -27,7 +27,7 @@ def _dtype_from_values(values):
 
 @dataclass
 class _LogBatch:
-    payloads: list[DecodedLogPayload]
+    payloads: list[LogPayload]
 
 
 class HDF5LogLogger:
@@ -41,7 +41,7 @@ class HDF5LogLogger:
         self.filename = Path(filename)
         self.batch_size = int(batch_size)
         self.flush_interval = float(flush_interval)
-        self.queue: queue.Queue[DecodedLogPayload] = queue.Queue(maxsize=max_queue_size)
+        self.queue: queue.Queue[LogPayload] = queue.Queue(maxsize=max_queue_size)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.file: Optional[h5py.File] = None
@@ -57,7 +57,7 @@ class HDF5LogLogger:
     def join(self, timeout: float | None = None) -> None:
         self.thread.join(timeout=timeout)
 
-    def enqueue(self, payload: DecodedLogPayload) -> None:
+    def enqueue(self, payload: LogPayload) -> None:
         try:
             self.queue.put_nowait(payload)
         except queue.Full:
@@ -67,7 +67,7 @@ class HDF5LogLogger:
         if self.file is None:
             self.file = h5py.File(self.filename, "a")
 
-    def _ensure_datasets(self, payload: DecodedLogPayload) -> None:
+    def _ensure_datasets(self, payload: LogPayload) -> None:
         if self.file is None:
             raise RuntimeError("HDF5 file is not open")
 
@@ -125,7 +125,7 @@ class HDF5LogLogger:
         ds.resize((new_len,))
         ds[old_len:new_len] = values
 
-    def _flush_batch(self, batch: list[DecodedLogPayload]) -> None:
+    def _flush_batch(self, batch: list[LogPayload]) -> None:
         if not batch:
             return
 
@@ -176,7 +176,7 @@ class HDF5LogLogger:
 
     def _run(self) -> None:
         self._open_file()
-        batch: list[DecodedLogPayload] = []
+        batch: list[LogPayload] = []
         last_flush = datetime.now().timestamp()
 
         try:

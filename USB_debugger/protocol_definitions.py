@@ -1,7 +1,7 @@
 from enum import IntEnum
 
-SOF1 = 0xAA
-SOF2 = 0x55
+SOF1_BIN = 0xAA
+SOF2_BIN = 0x55
 
 
 FOC_USB_DEBUG_SIGNAL_LIST = [
@@ -26,16 +26,17 @@ FOC_USB_DEBUG_SIGNAL_LIST = [
     {"bit": 16, "type": "f",     "name": "ab_voltage.beta"},
     {"bit": 17, "type": "f",     "name": "dq_voltage.d"},
     {"bit": 18, "type": "f",     "name": "dq_voltage.q"},
-    {"bit": 19, "type": "f",     "name": "encoder_angle_mechanical"},
-    {"bit": 20, "type": "f",     "name": "encoder_speed_mechanical"},
-    {"bit": 21, "type": "f",     "name": "encoder_angle_electrical"},
-    {"bit": 22, "type": "f",     "name": "encoder_speed_electrical"},
-    {"bit": 23, "type": "f",     "name": "dq_current_setpoint.d"},
-    
-    {"bit": 24, "type": "f",     "name": "dq_current_setpoint.q"},
-    {"bit": 25, "type": "f",     "name": "angle_setpoint"},
-    {"bit": 26, "type": "f",     "name": "speed_setpoint"},
-    {"bit": 27, "type": "u32",   "name": "execution_time.loop_max"},
+    {"bit": 19, "type": "f",     "name": "encoder_angle_mechanical_wrapped"},
+    {"bit": 20, "type": "f",     "name": "encoder_angle_mechanical_unwrapped"},
+    {"bit": 21, "type": "f",     "name": "encoder_speed_mechanical"},
+    {"bit": 22, "type": "f",     "name": "encoder_angle_electrical"},
+    {"bit": 23, "type": "f",     "name": "encoder_speed_electrical"},
+    {"bit": 24, "type": "f",     "name": "dq_current_setpoint.d"},
+
+    {"bit": 25, "type": "f",     "name": "dq_current_setpoint.q"},
+    {"bit": 26, "type": "f",     "name": "angle_setpoint"},
+    {"bit": 27, "type": "f",     "name": "speed_setpoint"},
+    {"bit": 28, "type": "u32",   "name": "execution_time.loop_max"},
 ]
 
 FOC_PID_CONTROLLERS_LIST = [
@@ -50,6 +51,8 @@ VAR_ID_LIST = [
     {"id": 1, "type": "f", "name": "dq_current_setpoint.q"},
     {"id": 2, "type": "f", "name": "angle_setpoint"},
     {"id": 3, "type": "f", "name": "speed_setpoint"},
+    {"id": 4, "type": "f", "name": "flash_data.limits.max_dq_current"},
+    {"id": 5, "type": "f", "name": "flash_data.limits.max_dq_voltage"},
 ]
 
 
@@ -71,6 +74,8 @@ class MsgType(IntEnum):
     MSG_SET_STATE       = 0x0E  # PC -> FOC
     MSG_GET_STATE       = 0x0F  # PC -> FOC
     MSG_STATE_REPLY     = 0x10  # FOC -> PC
+    MSG_TEXT_COMMAND    = 0x11  # PC -> FOC
+    MSG_TEXT_REPLY      = 0x12  # FOC -> PC
 
     MSG_UNKNOWN_TYPE    = 0xFA  # FOC -> PC
     MSG_INVALID_PAYLOAD = 0xFB  # FOC -> PC
