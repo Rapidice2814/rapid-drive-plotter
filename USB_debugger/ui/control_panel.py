@@ -67,5 +67,13 @@ class ControlDock(QDockWidget):
         self.btn_sp1.clicked.connect(lambda: self.on_command(Packet(msg_type=MsgType.MSG_TEXT_COMMAND, data=TextPayload(text="Sp3100"))))
         layout.addWidget(self.btn_sp1)
 
+        self.btn_sp2 = QPushButton("Sp5100")
+        self.btn_sp2.clicked.connect(lambda: self.on_command(Packet(msg_type=MsgType.MSG_TEXT_COMMAND, data=TextPayload(text="Sp5100"))))
+        layout.addWidget(self.btn_sp2)
+
+        self.btn_sp3 = QPushButton("Sp6200")
+        self.btn_sp3.clicked.connect(lambda: self.on_command(Packet(msg_type=MsgType.MSG_TEXT_COMMAND, data=TextPayload(text="Sp6200"))))
+        layout.addWidget(self.btn_sp3)
+
         layout.addStretch()
         self.setWidget(panel)

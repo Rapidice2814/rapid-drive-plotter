@@ -1,4 +1,3 @@
-import queue
 from typing import Callable
 
 from PySide6.QtCore import Qt
@@ -7,33 +6,70 @@ from PySide6.QtWidgets import QMainWindow
 from protocol_codec import LogPayload, PIDPayload, Packet, TextPayload, VarPayload
 from protocol_definitions import MsgType
 
+from serial_worker import SerialWorker
 from ui.command_panel import CommandDock
 from ui.pid_panel import PidDock
 from ui.signal_selector_panel import SignalSelectorDock
 from ui.plot_panel import PlotPanel
 from ui.control_panel import ControlDock
 from ui.variable_panel import VarDock
-from ui.connect_panel import SerialConnectPanel
+from ui.connect_panel import SerialConnectDock
+
 
 class PlotWindow(QMainWindow):
-    def __init__(self, on_command: Callable[[Packet], None]):
+    def __init__(self):
         super().__init__()
-        self.on_command = on_command
+
+        self.on_command: Callable[[Packet], None] = lambda _pkt: None
+        self.start_serial_callback: Callable[[str], None] | None = None
+        self.worker: SerialWorker | None = None
 
         self.setWindowTitle("Serial Plotter")
         self.resize(1400, 900)
 
         self._build_ui()
 
+    def set_command_sender(self, sender: Callable[[Packet], None]):
+        self.on_command = sender
+        self._refresh_command_targets()
+
+    def set_start_serial_callback(self, callback: Callable[[str], None]):
+        self.start_serial_callback = callback
+        if hasattr(self, "connect_dock"):
+            self.connect_dock.on_connect = callback
+
+    def _refresh_command_targets(self):
+        if hasattr(self, "signal_dock"):
+            self.signal_dock.on_command = self.on_command
+        if hasattr(self, "pid_dock"):
+            self.pid_dock.on_command = self.on_command
+        if hasattr(self, "control_dock"):
+            self.control_dock.on_command = self.on_command
+        if hasattr(self, "var_dock"):
+            self.var_dock.on_command = self.on_command
+
     def _build_ui(self):
         self.plot_panel = PlotPanel(self)
         self.setCentralWidget(self.plot_panel)
 
         self.command_dock = CommandDock(self._handle_text_command, self)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.command_dock)
 
-        # self.connect_dock = SerialConnectPanel(self.start_serial, self)
-        # self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.connect_dock)
+        self.connect_dock = SerialConnectDock(
+            self._on_connect_clicked,
+            self._on_disconnect_clicked,
+            self,
+        )
+
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.command_dock)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.connect_dock)
+        self.splitDockWidget(self.command_dock, self.connect_dock, Qt.Orientation.Horizontal)
+
+        self.resizeDocks(
+            [self.command_dock, self.connect_dock],
+            [8, 1],
+            Qt.Orientation.Horizontal,
+        )
+
 
         self.signal_dock = SignalSelectorDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.signal_dock)
@@ -54,6 +90,28 @@ class PlotWindow(QMainWindow):
         self.tabifyDockWidget(self.control_dock, self.pid_dock)
         self.tabifyDockWidget(self.control_dock, self.var_dock)
         self.control_dock.raise_()
+
+    def _on_connect_clicked(self, port: str):
+        if self.worker is not None:
+            return
+
+        if self.start_serial_callback is not None:
+            self.start_serial_callback(port)
+        if hasattr(self, "connect_dock"):
+            self.connect_dock.set_connected(True)
+
+    def _on_disconnect_clicked(self):
+        if self.worker is not None:
+            self.worker.stop()
+            self.worker = None
+
+        if hasattr(self, "connect_dock"):
+            self.connect_dock.set_connected(False)
+
+    def set_worker(self, worker: SerialWorker | None):
+        self.worker = worker
+        if hasattr(self, "connect_dock"):
+            self.connect_dock.set_connected(worker is not None)
 
     def enqueue_log(self, payload: LogPayload):
         self.plot_panel.enqueue_log(payload)
@@ -84,29 +142,6 @@ class PlotWindow(QMainWindow):
         cmd = cmd.strip()
         if not cmd:
             return
-
-        # if cmd.lower() == "3":
-        #     self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=0x080000EF))
-        #     return
-
-        # if cmd.lower() == "4":
-        #     self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=0x000000EF))
-        #     return
-
-        # if cmd.lower() == "12":
-        #     pkg = Packet(msg_type=MsgType.MSG_SET_VAR, data=VarPayload(var_id=4, value=float(2.0)))
-        #     self.on_command(pkg)
-        #     return
-
-        # if cmd.lower() == "13":
-        #     pkg = Packet(msg_type=MsgType.MSG_SET_VAR, data=VarPayload(var_id=4, value=float(5.0)))
-        #     self.on_command(pkg)
-        #     return
-
-        # if cmd.lower() == "10":
-        #     pkg = Packet(msg_type=MsgType.MSG_GET_VAR, data=VarPayload(var_id=4, value=None))
-        #     self.on_command(pkg)
-        #     return
 
         text_payload = TextPayload(text=cmd)
         pkg = Packet(msg_type=MsgType.MSG_TEXT_COMMAND, data=text_payload)

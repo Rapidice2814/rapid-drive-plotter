@@ -23,11 +23,13 @@ class SerialWorker:
         command_queue: queue.Queue[bytes],
         data_callback: Optional[Callable[[bytearray], None]] = None,
         error_callback: Optional[Callable[[Exception], None]] = None,
+        disconnect_callback: Optional[Callable[[], None]] = None,
     ):
         self.config = config
         self.command_queue = command_queue
         self.data_callback = data_callback
         self.error_callback = error_callback
+        self.disconnect_callback = disconnect_callback
 
         self.ser: Optional[serial.Serial] = None
         self.rx_buffer = bytearray()
@@ -50,6 +52,7 @@ class SerialWorker:
             baudrate=self.config.baudrate,
             timeout=self.config.timeout,
         )
+        self._clear_command_queue()
 
     def close(self) -> None:
         if self.ser is not None:
@@ -61,6 +64,7 @@ class SerialWorker:
 
     def stop(self) -> None:
         self.stop_flag = True
+        self.close()
 
     def send_bytes(self, data: bytes) -> None:
         if self.ser is None or not self.ser.is_open:
@@ -84,6 +88,17 @@ class SerialWorker:
         if self.data_callback:
             self.data_callback(self.rx_buffer)
 
+    def _notify_disconnect(self) -> None:
+        if self.disconnect_callback:
+            self.disconnect_callback()
+
+    def _clear_command_queue(self) -> None:
+        while True:
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _run(self) -> None:
         try:
             self.open()
@@ -93,19 +108,24 @@ class SerialWorker:
 
                 try:
                     data = self.ser.read(256) if self.ser is not None else b""
-                except SerialException as e:
+                except (SerialException, OSError) as e:
                     if self.error_callback:
                         self.error_callback(e)
+                    self._notify_disconnect()
                     break
 
                 if data:
                     self.rx_buffer.extend(data)
                     self._handle_buffer()
                 else:
+                    if self.ser is not None and not self.ser.is_open:
+                        self._notify_disconnect()
+                        break
                     time.sleep(0.001)
 
         except Exception as e:
             if self.error_callback:
                 self.error_callback(e)
+            self._notify_disconnect()
         finally:
             self.close()

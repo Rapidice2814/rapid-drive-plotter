@@ -1,11 +1,17 @@
 import queue
 from collections import defaultdict, deque
 
+
 import pyqtgraph as pg
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 
+
 from protocol_codec import LogPayload
+
+
+LOG_FREQ = 8000
+LOG_DT = 1.0 / LOG_FREQ
 
 
 class PlotPanel(QWidget):
@@ -24,7 +30,7 @@ class PlotPanel(QWidget):
         self.graph = pg.GraphicsLayoutWidget()
         layout.addWidget(self.graph)
 
-        self.plot = self.graph.addPlot(title="Live Data") # type: ignore[attr-defined]
+        self.plot = self.graph.addPlot(title="Live Data")  # type: ignore[attr-defined]
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.setDownsampling(auto=True, mode="peak")
         self.plot.setClipToView(True)
@@ -51,7 +57,8 @@ class PlotPanel(QWidget):
             self._update_plot()
 
     def _handle_log_payload(self, payload: LogPayload):
-        self.time_buffer.extend(range(payload.timestamp, payload.timestamp + payload.sample_count))
+        start_t = payload.timestamp / LOG_FREQ
+        self.time_buffer.extend(start_t + i * LOG_DT for i in range(payload.sample_count))
 
         for name, values in payload.signals.items():
             self.data_buffers[name].extend(values)

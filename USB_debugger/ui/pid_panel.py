@@ -4,6 +4,10 @@ from PySide6.QtCore import Qt
 from protocol_codec import PIDPayload, Packet
 from protocol_definitions import FOC_PID_CONTROLLERS_LIST, MsgType
 
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
 class PidDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("PID Controllers", parent)
@@ -34,14 +38,14 @@ class PidDock(QDockWidget):
             group = QGroupBox(f"{ctrl_name} (id={ctrl_id})")
             form = QFormLayout(group)
 
-            kp = QDoubleSpinBox()
-            ki = QDoubleSpinBox()
-            kd = QDoubleSpinBox()
+            kp = NoWheelDoubleSpinBox()
+            ki = NoWheelDoubleSpinBox()
+            kd = NoWheelDoubleSpinBox()
 
             for w in (kp, ki, kd):
                 w.setDecimals(6)
                 w.setRange(-1e9, 1e9)
-                w.setSingleStep(0.001)
+                w.setSingleStep(0.1)
 
             form.addRow("Kp", kp)
             form.addRow("Ki", ki)

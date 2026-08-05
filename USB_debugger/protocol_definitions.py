@@ -53,6 +53,15 @@ VAR_ID_LIST = [
     {"id": 3, "type": "f", "name": "speed_setpoint"},
     {"id": 4, "type": "f", "name": "flash_data.limits.max_dq_current"},
     {"id": 5, "type": "f", "name": "flash_data.limits.max_dq_voltage"},
+    {"id": 6, "type": "f", "name": "flash_data.limits.vbus_overvoltage_trip_level"},
+    {"id": 7, "type": "f", "name": "flash_data.limits.vbus_undervoltage_trip_level"},
+    {"id": 8, "type": "f", "name": "flash_data.limits.ibus_overcurrent_trip_level"},
+    {"id": 9, "type": "f", "name": "flash_data.limits.motor_temp_trip_level"},
+    {"id": 10, "type": "f", "name": "flash_data.limits.mosfet_temp_trip_level"},
+    {"id": 11, "type": "u32", "name": "flash_data.motor.pole_pairs"},
+    {"id": 12, "type": "f", "name": "flash_data.motor.phase_resistance"},
+    {"id": 13, "type": "f", "name": "flash_data.motor.phase_inductance"},
+    {"id": 14, "type": "f", "name": "flash_data.motor.torque_constant"},
 ]
 
 
