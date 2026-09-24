@@ -3,7 +3,8 @@ from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QCheckB
 from PySide6.QtCore import Qt
 
 from protocol_codec import Packet
-from protocol_definitions import FOC_USB_DEBUG_SIGNAL_LIST, MsgType
+from protocol_definitions import SIGNAL_MASK_BYTES, FOC_USB_DEBUG_SIGNAL_LIST, MsgType
+
 
 class SignalSelectorDock(QDockWidget):
     def __init__(self, on_command, parent=None):
@@ -17,7 +18,7 @@ class SignalSelectorDock(QDockWidget):
 
         self.signal_meta = [s for s in FOC_USB_DEBUG_SIGNAL_LIST if s["name"]]
         self.signal_checkboxes = {}
-        self.current_mask = 0
+        self.current_mask = bytearray(SIGNAL_MASK_BYTES)  # 4 bytes, all zero
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -50,18 +51,27 @@ class SignalSelectorDock(QDockWidget):
     def _on_signal_toggled(self):
         self.update_mask(send=True)
 
-    def update_mask(self, send: bool):
-        mask = 0
+    def _build_mask(self) -> bytearray:
+        mask = bytearray(SIGNAL_MASK_BYTES)
         for sig in self.signal_meta:
             bit = int(sig["bit"])
             cb = self.signal_checkboxes[bit]
             if cb.isChecked():
-                mask |= (1 << bit)
+                byte_index = bit // 8
+                bit_index = bit & 7
+                mask[byte_index] |= (1 << bit_index)
+        return mask
 
+    def update_mask(self, send: bool):
+        mask = self._build_mask()
         self.current_mask = mask
-        self.mask_label.setText(f"Mask: 0x{mask:08X}")
+
+        # Show as 32-bit hex for readability
+        mask_int = int.from_bytes(mask, "little")
+        self.mask_label.setText(f"Mask: 0x{mask_int:08X}")
 
         if send:
             self.on_command(Packet(msg_type=MsgType.MSG_STOP_LOG, data=None))
-            self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=mask))
+            # Send mask as bytes (4 bytes, little-endian bit layout)
+            self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=bytes(mask)))
             self.on_command(Packet(msg_type=MsgType.MSG_START_LOG, data=None))

@@ -3,7 +3,7 @@ from enum import IntEnum
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
-
+SIGNAL_MASK_BYTES = 8
 FOC_USB_DEBUG_SIGNAL_LIST = [
     {"bit": 0,  "type": "u32",   "name": "timestamp"},
     {"bit": 1,  "type": "f",     "name": "adc_values.motor_temp"},
@@ -18,25 +18,34 @@ FOC_USB_DEBUG_SIGNAL_LIST = [
     {"bit": 9,  "type": "f",     "name": "ab_current.beta"},
     {"bit": 10, "type": "f",     "name": "dq_current.d"},
     {"bit": 11, "type": "f",     "name": "dq_current.q"},
-    {"bit": 12, "type": "f",     "name": "phase_voltage.a"},
-    {"bit": 13, "type": "f",     "name": "phase_voltage.b"},
-    {"bit": 14, "type": "f",     "name": "phase_voltage.c"},
-    {"bit": 15, "type": "f",     "name": "ab_voltage.alpha"},
+    {"bit": 12, "type": "f",     "name": "dq_current_filtered.d"},
+    {"bit": 13, "type": "f",     "name": "dq_current_filtered.q"},
 
-    {"bit": 16, "type": "f",     "name": "ab_voltage.beta"},
-    {"bit": 17, "type": "f",     "name": "dq_voltage.d"},
-    {"bit": 18, "type": "f",     "name": "dq_voltage.q"},
-    {"bit": 19, "type": "f",     "name": "encoder_angle_mechanical_wrapped"},
-    {"bit": 20, "type": "f",     "name": "encoder_angle_mechanical_unwrapped"},
-    {"bit": 21, "type": "f",     "name": "encoder_speed_mechanical"},
-    {"bit": 22, "type": "f",     "name": "encoder_angle_electrical"},
-    {"bit": 23, "type": "f",     "name": "encoder_speed_electrical"},
-    {"bit": 24, "type": "f",     "name": "dq_current_setpoint.d"},
+    {"bit": 14, "type": "f",     "name": "phase_voltage.a"},
+    {"bit": 15, "type": "f",     "name": "phase_voltage.b"},
+    {"bit": 16, "type": "f",     "name": "phase_voltage.c"},
+    {"bit": 17, "type": "f",     "name": "ab_voltage.alpha"},
 
-    {"bit": 25, "type": "f",     "name": "dq_current_setpoint.q"},
-    {"bit": 26, "type": "f",     "name": "angle_setpoint"},
-    {"bit": 27, "type": "f",     "name": "speed_setpoint"},
-    {"bit": 28, "type": "u32",   "name": "execution_time.loop_max"},
+    {"bit": 18, "type": "f",     "name": "ab_voltage.beta"},
+    {"bit": 19, "type": "f",     "name": "dq_voltage.d"},
+    {"bit": 20, "type": "f",     "name": "dq_voltage.q"},
+    {"bit": 21, "type": "f",     "name": "encoder_angle_mechanical_wrapped"},
+    {"bit": 22, "type": "f",     "name": "encoder_angle_mechanical_unwrapped"},
+    {"bit": 23, "type": "f",     "name": "encoder_speed_mechanical"},
+    {"bit": 24, "type": "f",     "name": "encoder_angle_electrical"},
+    {"bit": 25, "type": "f",     "name": "encoder_speed_electrical"},
+    {"bit": 26, "type": "f",     "name": "dq_current_setpoint.d"},
+
+    {"bit": 27, "type": "f",     "name": "dq_current_setpoint.q"},
+    {"bit": 28, "type": "f",     "name": "angle_setpoint"},
+    {"bit": 29, "type": "f",     "name": "speed_setpoint"},
+    {"bit": 30, "type": "u32",   "name": "execution_time.loop_max"},
+
+    {"bit": 31, "type": "f",     "name": "hfi.injection_phase"},
+    {"bit": 32, "type": "f",     "name": "hfi.i_alpha_l_raw"},
+    {"bit": 33, "type": "f",     "name": "hfi.i_beta_l_raw"},
+    {"bit": 34, "type": "f",     "name": "hfi.i_alpha_l_filtered"},
+    {"bit": 35, "type": "f",     "name": "hfi.i_beta_l_filtered"},
 ]
 
 FOC_PID_CONTROLLERS_LIST = [
@@ -62,6 +71,10 @@ VAR_ID_LIST = [
     {"id": 12, "type": "f", "name": "flash_data.motor.phase_resistance"},
     {"id": 13, "type": "f", "name": "flash_data.motor.phase_inductance"},
     {"id": 14, "type": "f", "name": "flash_data.motor.torque_constant"},
+    {"id": 15, "type": "u32", "name": "flash_data.hfi.hfi_enabled"},
+    {"id": 16, "type": "f", "name": "flash_data.hfi.injection_amplitude"},
+    {"id": 17, "type": "f", "name": "flash_data.hfi.injection_omega"},
+    {"id": 18, "type": "f", "name": "flash_data.controller.current_control_bandwidth"}
 ]
 
 

@@ -2,18 +2,19 @@ import struct
 from dataclasses import dataclass
 from typing import Any
 
-from protocol_definitions import SOF1_BIN, SOF2_BIN, MsgType, FOC_USB_DEBUG_SIGNAL_LIST, VAR_ID_LIST
-
+from protocol_definitions import SOF1_BIN, SOF2_BIN, MsgType, SIGNAL_MASK_BYTES, FOC_USB_DEBUG_SIGNAL_LIST, VAR_ID_LIST
 
 @dataclass
 class RawPacket:
     msg_type: int
     payload: bytes
 
+
 @dataclass
 class Packet:
     msg_type: MsgType
-    data: LogPayload | PIDPayload | TextPayload | VarPayload | int | None
+    data: LogPayload | PIDPayload | TextPayload | VarPayload | bytes | int | None
+
 
 @dataclass
 class LogPayload:
@@ -23,12 +24,14 @@ class LogPayload:
     enabled_signals: list[dict[str, Any]]
     signals: dict[str, list[int | float]]
 
+
 @dataclass
 class PIDPayload:
     controller_id: int
     kp: float | None
     ki: float | None
     kd: float | None
+
 
 @dataclass
 class VarPayload:
@@ -41,15 +44,30 @@ class TextPayload:
     text: str
 
 
+def mask_bytes_to_int(mask: bytes | bytearray) -> int:
+    """Convert little-endian mask bytes to int (for display / debugging)."""
+    return int.from_bytes(mask, "little")
+
+
+def mask_int_to_bytes(mask: int, length: int = SIGNAL_MASK_BYTES) -> bytes:
+    """Convert int to little-endian mask bytes."""
+    return mask.to_bytes(length, "little")
+
+
 class ProtocolCodec:
     def __init__(
         self,
-        log_mask=0,
+        log_mask: bytes | bytearray | None = None,
         sof1_bin=SOF1_BIN,
         sof2_bin=SOF2_BIN,
         signal_list=FOC_USB_DEBUG_SIGNAL_LIST,
     ):
-        self.log_mask = log_mask
+        if log_mask is None:
+            log_mask = bytes(SIGNAL_MASK_BYTES)  # all zero
+        if len(log_mask) != SIGNAL_MASK_BYTES:
+            raise ValueError(f"log_mask must be {SIGNAL_MASK_BYTES} bytes")
+
+        self.log_mask = bytes(log_mask)
         self.sof1_bin = sof1_bin
         self.sof2_bin = sof2_bin
         self.signal_list = signal_list
@@ -78,11 +96,9 @@ class ProtocolCodec:
     def f32_to_u32(v):
         return struct.unpack('<I', struct.pack('<f', float(v)))[0]
 
-
     @staticmethod
     def i32_to_u32(v):
         return struct.unpack('<I', struct.pack('<i', int(v)))[0]
-
 
     @classmethod
     def cast_to_u32_value(cls, v, typ):
@@ -95,16 +111,21 @@ class ProtocolCodec:
         else:
             raise ValueError(f"Unsupported type: {typ}")
 
-    def set_log_mask(self, log_mask):
-        self.log_mask = log_mask
+    def set_log_mask(self, log_mask: bytes | bytearray):
+        if len(log_mask) != SIGNAL_MASK_BYTES:
+            raise ValueError(f"log_mask must be {SIGNAL_MASK_BYTES} bytes")
+        self.log_mask = bytes(log_mask)
 
-    def get_enabled_signals(self, log_mask=None):
+    def get_enabled_signals(self, log_mask: bytes | bytearray | None = None):
         if log_mask is None:
             log_mask = self.log_mask
 
         enabled = []
         for sig in self.signal_list:
-            if log_mask & (1 << sig["bit"]):
+            bit = int(sig["bit"])
+            byte_index = bit // 8
+            bit_index = bit & 7
+            if byte_index < len(log_mask) and (log_mask[byte_index] & (1 << bit_index)):
                 enabled.append(sig)
         return enabled
 
@@ -143,16 +164,16 @@ class ProtocolCodec:
         return packets
 
     def build_packet(self, packet: RawPacket) -> bytes:
-            msg_type = int(packet.msg_type)
-    
-            if not (0 <= msg_type <= 0xFF):
-                raise ValueError("msg_type must fit in one byte")
-    
-            payload_length = len(packet.payload)
-            if payload_length > 0xFFFF:
-                raise ValueError("payload too large for 16-bit length")
-    
-            return struct.pack("<BBBH", self.sof1_bin, self.sof2_bin, msg_type, payload_length) + packet.payload
+        msg_type = int(packet.msg_type)
+
+        if not (0 <= msg_type <= 0xFF):
+            raise ValueError("msg_type must fit in one byte")
+
+        payload_length = len(packet.payload)
+        if payload_length > 0xFFFF:
+            raise ValueError("payload too large for 16-bit length")
+
+        return struct.pack("<BBBH", self.sof1_bin, self.sof2_bin, msg_type, payload_length) + packet.payload
 
     def decode_packet(self, packet: RawPacket) -> Packet | None:
         try:
@@ -193,22 +214,22 @@ class ProtocolCodec:
             payload = struct.pack('<Bfff', packet.data.controller_id, packet.data.kp, packet.data.ki, packet.data.kd)
         elif packet.msg_type == MsgType.MSG_TEXT_COMMAND and isinstance(packet.data, TextPayload):
             payload = self._encode_text_payload(packet.data)
-        elif packet.msg_type == MsgType.MSG_SET_MASK and isinstance(packet.data, int):
-            self.log_mask = packet.data
-            payload = struct.pack('<I', packet.data)
+        elif packet.msg_type == MsgType.MSG_SET_MASK and isinstance(packet.data, (bytes, bytearray)):
+            if len(packet.data) != SIGNAL_MASK_BYTES:
+                raise ValueError(f"MSG_SET_MASK data must be {SIGNAL_MASK_BYTES} bytes")
+            self.log_mask = bytes(packet.data)
+            payload = bytes(packet.data)  # send raw 4 bytes
         elif packet.msg_type == MsgType.MSG_GET_VAR and isinstance(packet.data, VarPayload):
             payload = struct.pack('<B', packet.data.var_id)
         elif packet.msg_type == MsgType.MSG_SET_VAR and isinstance(packet.data, VarPayload):
             payload = self._encode_var_payload(packet.data)
-
 
         return RawPacket(
             msg_type=int(packet.msg_type),
             payload=payload,
         )
 
-
-    def _decode_log_payload(self, payload: bytes, log_mask: int | None = None) -> LogPayload | None:
+    def _decode_log_payload(self, payload: bytes, log_mask: bytes | bytearray | None = None) -> LogPayload | None:
         if log_mask is None:
             log_mask = self.log_mask
 
@@ -253,8 +274,7 @@ class ProtocolCodec:
             enabled_signals=enabled_signals,
             signals=signal_buffers,
         )
-            
-    
+
     def _decode_pid_payload(self, payload: bytes) -> PIDPayload | None:
         if len(payload) != 13:
             print(f"Invalid PID_REPLY payload length: {len(payload)}")
@@ -305,7 +325,7 @@ class ProtocolCodec:
 
     def _encode_text_payload(self, text_payload: TextPayload) -> bytes:
         return (text_payload.text + "\n").encode("utf-8")
-    
+
     def _decode_text_payload(self, payload: bytes) -> TextPayload | None:
         try:
             text = payload.decode("utf-8")
@@ -315,11 +335,10 @@ class ProtocolCodec:
 
         return TextPayload(text=text)
 
-
     def build_text_command_packet(self, command_str: str) -> bytes:
         cmd_bytes = self.build_packet(RawPacket(MsgType.MSG_TEXT_COMMAND, command_str.encode("utf-8")))
         return cmd_bytes
-
+    
     # def build_text_command_packet(self, command_str: str) -> bytes:
     #     command_str = command_str.strip()
 
