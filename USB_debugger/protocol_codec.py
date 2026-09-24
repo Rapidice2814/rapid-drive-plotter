@@ -1,20 +1,10 @@
+from __future__ import annotations
+
 import struct
 from dataclasses import dataclass
 from typing import Any
 
 from protocol_definitions import SOF1_BIN, SOF2_BIN, MsgType, SIGNAL_MASK_BYTES, FOC_USB_DEBUG_SIGNAL_LIST, VAR_ID_LIST
-
-@dataclass
-class RawPacket:
-    msg_type: int
-    payload: bytes
-
-
-@dataclass
-class Packet:
-    msg_type: MsgType
-    data: LogPayload | PIDPayload | TextPayload | VarPayload | bytes | int | None
-
 
 @dataclass
 class LogPayload:
@@ -24,7 +14,6 @@ class LogPayload:
     enabled_signals: list[dict[str, Any]]
     signals: dict[str, list[int | float]]
 
-
 @dataclass
 class PIDPayload:
     controller_id: int
@@ -32,27 +21,35 @@ class PIDPayload:
     ki: float | None
     kd: float | None
 
-
 @dataclass
 class VarPayload:
     var_id: int
     value: int | float | None
 
-
 @dataclass
 class TextPayload:
     text: str
+
+@dataclass
+class RawPacket:
+    msg_type: int
+    payload: bytes
+
+@dataclass
+class Packet:
+    msg_type: MsgType
+    data: LogPayload | PIDPayload | TextPayload | VarPayload | bytes | int | None
+    valid: bool = True
+    raw_payload: bytes = b""
 
 
 def mask_bytes_to_int(mask: bytes | bytearray) -> int:
     """Convert little-endian mask bytes to int (for display / debugging)."""
     return int.from_bytes(mask, "little")
 
-
 def mask_int_to_bytes(mask: int, length: int = SIGNAL_MASK_BYTES) -> bytes:
     """Convert int to little-endian mask bytes."""
     return mask.to_bytes(length, "little")
-
 
 class ProtocolCodec:
     def __init__(
@@ -177,30 +174,63 @@ class ProtocolCodec:
 
     def decode_packet(self, packet: RawPacket) -> Packet | None:
         try:
-            msg_type = MsgType(packet.msg_type)
+            msg_type: MsgType | int = MsgType(packet.msg_type)
         except ValueError:
-            print(f"Unknown packet type: {packet.msg_type}")
-            return None
+            # Preserve unknown packets for diagnostics.  They can still be
+            # correlated with the command in flight as a failed reply.
+            return Packet(
+                msg_type=MsgType(packet.msg_type),
+                data=packet.payload,
+                valid=False,
+                raw_payload=packet.payload,
+            )
 
-        match msg_type:
-            case MsgType.MSG_LOG_DATA:
-                decoded = self._decode_log_payload(packet.payload)
-            case MsgType.MSG_PID_REPLY:
-                decoded = self._decode_pid_payload(packet.payload)
-            case MsgType.MSG_TEXT_REPLY:
-                decoded = self._decode_text_payload(packet.payload)
-            case MsgType.MSG_VAR_REPLY:
-                decoded = self._decode_var_payload(packet.payload)
-            case _:
-                print(f"Received packet: {msg_type.name}")
-                return None
+        if msg_type == MsgType.MSG_LOG_DATA:
+            decoded = self._decode_log_payload(packet.payload)
+        elif msg_type == MsgType.MSG_PID_REPLY:
+            decoded = self._decode_pid_payload(packet.payload)
+        elif msg_type == MsgType.MSG_TEXT_REPLY:
+            decoded = self._decode_text_payload(packet.payload)
+        elif msg_type == MsgType.MSG_VAR_REPLY:
+            decoded = self._decode_var_payload(packet.payload)
+        elif msg_type in {
+            MsgType.MSG_ACK,
+            MsgType.MSG_VERSION_REPLY,
+            MsgType.MSG_STATE_REPLY,
+        }:
+            decoded = packet.payload
+        elif msg_type in {
+            MsgType.MSG_UNKNOWN_TYPE,
+            MsgType.MSG_INVALID_PAYLOAD,
+            MsgType.MSG_UNKNOWN_ID,
+            MsgType.MSG_BUFFER_OVERFLOW,
+            MsgType.MSG_ERROR,
+        }:
+            decoded = packet.payload
+            return Packet(
+                msg_type=msg_type,
+                data=decoded,
+                valid=False,
+                raw_payload=packet.payload,
+            )
+        else:
+            # Other known message types are still useful to show in the
+            # diagnostic output, even if this application has no decoder.
+            decoded = packet.payload
 
         if decoded is None:
-            return None
+            return Packet(
+                msg_type=msg_type,
+                data=packet.payload,
+                valid=False,
+                raw_payload=packet.payload,
+            )
 
         return Packet(
             msg_type=msg_type,
             data=decoded,
+            valid=True,
+            raw_payload=packet.payload,
         )
 
     def encode_packet(self, packet: Packet) -> RawPacket:
@@ -217,8 +247,7 @@ class ProtocolCodec:
         elif packet.msg_type == MsgType.MSG_SET_MASK and isinstance(packet.data, (bytes, bytearray)):
             if len(packet.data) != SIGNAL_MASK_BYTES:
                 raise ValueError(f"MSG_SET_MASK data must be {SIGNAL_MASK_BYTES} bytes")
-            self.log_mask = bytes(packet.data)
-            payload = bytes(packet.data)  # send raw 4 bytes
+            payload = bytes(packet.data)  # send raw mask bytes
         elif packet.msg_type == MsgType.MSG_GET_VAR and isinstance(packet.data, VarPayload):
             payload = struct.pack('<B', packet.data.var_id)
         elif packet.msg_type == MsgType.MSG_SET_VAR and isinstance(packet.data, VarPayload):

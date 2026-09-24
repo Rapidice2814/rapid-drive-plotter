@@ -27,9 +27,9 @@ class ControlDock(QDockWidget):
         self.btn_stop.clicked.connect(lambda: self.on_command(Packet(msg_type=MsgType.MSG_STOP_LOG, data=None)))
         layout.addWidget(self.btn_stop)
 
-        self.btn_home = QPushButton("Reset Zoom")
-        self.btn_home.clicked.connect(self.on_plot_reset)
-        layout.addWidget(self.btn_home)
+        # self.btn_home = QPushButton("Reset Zoom")
+        # self.btn_home.clicked.connect(self.on_plot_reset)
+        # layout.addWidget(self.btn_home)
 
         self.btn_mo = QPushButton("Open loop control")
         self.btn_mo.clicked.connect(lambda: self.on_command(Packet(msg_type=MsgType.MSG_TEXT_COMMAND, data=TextPayload(text="Mo"))))

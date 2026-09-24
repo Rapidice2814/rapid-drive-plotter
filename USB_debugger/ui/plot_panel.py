@@ -1,17 +1,12 @@
 import queue
 from collections import defaultdict, deque
 
-
 import pyqtgraph as pg
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-
+import config
 from protocol_codec import LogPayload
-
-
-LOG_FREQ = 8000
-LOG_DT = 1.0 / LOG_FREQ
 
 
 class PlotPanel(QWidget):
@@ -22,15 +17,27 @@ class PlotPanel(QWidget):
         self.time_buffer = deque(maxlen=100000)
         self.curves = {}
         self.active_signals = []
-
         self._payload_queue = queue.Queue()
 
         layout = QVBoxLayout(self)
+
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("Trace view:"))
+        self.auto_follow_checkbox = QCheckBox("Auto-follow latest data")
+        self.auto_follow_checkbox.setChecked(True)
+        self.auto_follow_checkbox.toggled.connect(self._set_auto_follow)
+        toolbar.addWidget(self.auto_follow_checkbox)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
 
         self.graph = pg.GraphicsLayoutWidget()
         layout.addWidget(self.graph)
 
         self.plot = self.graph.addPlot(title="Live Data")  # type: ignore[attr-defined]
+        self._programmatic_range_change = False
+        manual_range_signal = getattr(self.plot.getViewBox(), "sigRangeChangedManually", None)
+        if manual_range_signal is not None:
+            manual_range_signal.connect(self._on_manual_range_change)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.setDownsampling(auto=True, mode="peak")
         self.plot.setClipToView(True)
@@ -42,6 +49,33 @@ class PlotPanel(QWidget):
 
     def enqueue_log(self, payload: LogPayload):
         self._payload_queue.put(payload)
+
+    def _set_auto_follow(self, enabled: bool):
+        if enabled:
+            self._auto_follow_latest()
+
+    def _on_manual_range_change(self, _ranges):
+        # Let the user inspect history without the next telemetry frame
+        # immediately snapping the view back.  The checkbox at the top is the
+        # explicit way to return to live-follow mode.
+        if not self._programmatic_range_change and self.auto_follow_checkbox.isChecked():
+            self.auto_follow_checkbox.setChecked(False)
+
+    def _auto_follow_latest(self):
+        if not self.time_buffer:
+            self.plot.autoRange()
+            return
+
+        newest = self.time_buffer[-1]
+        oldest = self.time_buffer[0]
+        window = max(float(config.AUTO_FOLLOW_WINDOW_S), 1.0 / config.LOG_FREQ)
+        left = max(oldest, newest - window)
+        self._programmatic_range_change = True
+        try:
+            self.plot.enableAutoRange(x=False, y=True)
+            self.plot.setXRange(left, newest, padding=0)
+        finally:
+            self._programmatic_range_change = False
 
     def _drain_queue_and_update(self):
         updated = False
@@ -57,7 +91,8 @@ class PlotPanel(QWidget):
             self._update_plot()
 
     def _handle_log_payload(self, payload: LogPayload):
-        start_t = payload.timestamp / LOG_FREQ
+        start_t = payload.timestamp / config.LOG_FREQ
+        LOG_DT = 1.0 / config.LOG_FREQ
         self.time_buffer.extend(start_t + i * LOG_DT for i in range(payload.sample_count))
 
         for name, values in payload.signals.items():
@@ -90,5 +125,9 @@ class PlotPanel(QWidget):
             if n > 0 and name in self.curves:
                 self.curves[name].setData(x[-n:], y[-n:])
 
+        if self.auto_follow_checkbox.isChecked():
+            self._auto_follow_latest()
+
     def reset_zoom(self):
-        self.plot.autoRange()
+        self.auto_follow_checkbox.setChecked(True)
+        self._auto_follow_latest()
