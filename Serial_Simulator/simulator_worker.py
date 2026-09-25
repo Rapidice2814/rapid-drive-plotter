@@ -11,8 +11,9 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from protocol_codec import ProtocolCodec, RawPacket
-from protocol_definitions import (
+from config import SIMULATOR_SAMPLES_PER_PACKET, SAMPLE_RATE
+from USB_debugger.protocol_codec import ProtocolCodec, RawPacket
+from USB_debugger.protocol_definitions import (
     FOC_USB_DEBUG_SIGNAL_LIST,
     SIGNAL_MASK_BYTES,
     VAR_ID_LIST,
@@ -22,9 +23,8 @@ from protocol_definitions import (
 
 @dataclass(frozen=True)
 class SimulatorConfig:
-    sample_interval: float = 0.05
-    samples_per_packet: int = 20
-    timestamp_hz: float = 8000.0
+    samples_per_packet: int = SIMULATOR_SAMPLES_PER_PACKET
+    sample_rate: float = SAMPLE_RATE
 
 
 class SimulatorWorker:
@@ -64,8 +64,6 @@ class SimulatorWorker:
         self.error_callback = error_callback
         self.disconnect_callback = disconnect_callback
         self.config = config or SimulatorConfig()
-        if self.config.sample_interval <= 0:
-            raise ValueError("sample_interval must be positive")
         max_samples_per_packet = (0xFFFF - struct.calcsize("<IHH")) // (
             4 * len(FOC_USB_DEBUG_SIGNAL_LIST)
         )
@@ -73,8 +71,8 @@ class SimulatorWorker:
             raise ValueError(
                 f"samples_per_packet must be between 1 and {max_samples_per_packet}"
             )
-        if self.config.timestamp_hz <= 0:
-            raise ValueError("timestamp_hz must be positive")
+        if self.config.sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
 
         self.codec = ProtocolCodec()
         self.rx_buffer = bytearray()
@@ -113,7 +111,11 @@ class SimulatorWorker:
     def _run(self) -> None:
         try:
             self._clear_command_queue()
+            packet_interval = (
+                self.config.samples_per_packet / self.config.sample_rate
+            )
             next_log_at = time.monotonic()
+            was_logging = False
             while not self._stop_event.is_set():
                 did_work = False
                 while not self._stop_event.is_set():
@@ -125,9 +127,16 @@ class SimulatorWorker:
                     self._handle_command_bytes(command)
 
                 now = time.monotonic()
+                if self._logging and not was_logging:
+                    # Begin with a packet immediately when logging starts.
+                    next_log_at = now
+                was_logging = self._logging
+
                 if self._logging and now >= next_log_at:
                     self._emit_log_packet()
-                    next_log_at = now + self.config.sample_interval
+                    # Each packet contains N samples at SAMPLE_RATE, so packets
+                    # are separated by N / SAMPLE_RATE seconds.
+                    next_log_at += packet_interval
                     did_work = True
 
                 if not did_work:
@@ -292,33 +301,27 @@ class SimulatorWorker:
         sample_count = self.config.samples_per_packet
         payload = bytearray(struct.pack("<IHH", self._timestamp, sample_count, len(enabled_signals)))
 
-        ticks_per_sample = max(
-            1,
-            round(
-                self.config.timestamp_hz
-                * self.config.sample_interval
-                / sample_count
-            ),
-        )
         for _sample_index in range(sample_count):
             sample_timestamp = self._timestamp
-            elapsed = time.monotonic() - self._started_at
+            elapsed = sample_timestamp / self.config.sample_rate
+            sample_values = self._sample_values(sample_timestamp, elapsed)
             for signal in enabled_signals:
                 name = str(signal["name"])
-                value = self._sample_value(name, sample_timestamp, elapsed)
+                value = sample_values.get(name, 0.0)
                 payload.extend(
                     struct.pack(
                         "<I",
                         ProtocolCodec.cast_to_u32_value(value, str(signal["type"])),
                     )
                 )
-            self._timestamp = (self._timestamp + ticks_per_sample) & 0xFFFFFFFF
+            # Timestamp ticks correspond to individual samples at SAMPLE_RATE.
+            self._timestamp = (self._timestamp + 1) & 0xFFFFFFFF
 
         self._emit_bytes(self.codec.build_packet(RawPacket(int(MsgType.MSG_LOG_DATA), bytes(payload))))
 
-    def _sample_value(self, name: str, timestamp: int, elapsed: float) -> int | float:
+    def _sample_values(self, timestamp: int, elapsed: float) -> dict[str, int | float]:
         angle = 2.0 * math.pi * 0.8 * elapsed
-        phase = angle + (timestamp / self.config.timestamp_hz) * 2.0 * math.pi * 3.0
+        phase = angle + (timestamp / self.config.sample_rate) * 2.0 * math.pi * 3.0
         values: dict[str, int | float] = {
             "timestamp": timestamp,
             "adc_values.motor_temp": 35.0 + 0.4 * math.sin(elapsed / 8.0),
@@ -357,4 +360,4 @@ class SimulatorWorker:
             "hfi.i_alpha_l_filtered": 0.15 * math.sin(phase * 2.0),
             "hfi.i_beta_l_filtered": 0.15 * math.cos(phase * 2.0),
         }
-        return values.get(name, 0.0)
+        return values

@@ -12,7 +12,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from config import TIMESTAMP_HZ
+from config import SAMPLE_RATE
 from protocol_codec import LogPayload
 
 _LOG = logging.getLogger(__name__)
@@ -60,8 +60,8 @@ class PlotPanel(QWidget):
         super().__init__(parent)
         if max_samples <= 0 or max_queued_payloads <= 0 or update_interval_ms <= 0:
             raise ValueError("buffer sizes and update interval must be positive")
-        if TIMESTAMP_HZ <= 0:
-            raise ValueError("TIMESTAMP_HZ must be positive")
+        if SAMPLE_RATE <= 0:
+            raise ValueError("SAMPLE_RATE must be positive")
 
         self._max_samples = max_samples
         self._payload_queue: queue.Queue[LogPayload] = queue.Queue(
@@ -89,12 +89,12 @@ class PlotPanel(QWidget):
 
         self.window_seconds = QDoubleSpinBox()
         self.window_seconds.setRange(
-            min(0.1, max_samples / TIMESTAMP_HZ), max_samples / TIMESTAMP_HZ
+            min(0.1, max_samples / SAMPLE_RATE), max_samples / SAMPLE_RATE
         )
         self.window_seconds.setDecimals(1)
         self.window_seconds.setSingleStep(0.5)
         self.window_seconds.setValue(
-            min(_DEFAULT_WINDOW_SECONDS, max_samples / TIMESTAMP_HZ)
+            min(_DEFAULT_WINDOW_SECONDS, max_samples / SAMPLE_RATE)
         )
         self.window_seconds.setSuffix(" s")
         self.window_seconds.setToolTip(
@@ -184,7 +184,7 @@ class PlotPanel(QWidget):
         # relative time axis from the number of received samples instead.
         first_sample = self._samples_received
         self.time_buffer.extend(
-            (first_sample + sample_index) / TIMESTAMP_HZ
+            (first_sample + sample_index) / SAMPLE_RATE
             for sample_index in range(payload.sample_count)
         )
         for name in self._signal_names:
@@ -233,11 +233,11 @@ class PlotPanel(QWidget):
     def _update_follow_range(self) -> None:
         if not self._auto_follow:
             return
-        end_time = self._samples_received / TIMESTAMP_HZ
+        end_time = self._samples_received / SAMPLE_RATE
         window = self.window_seconds.value()
         start_time = max(0.0, end_time - window)
         if end_time <= start_time:
-            end_time = start_time + 1.0 / TIMESTAMP_HZ
+            end_time = start_time + 1.0 / SAMPLE_RATE
         self.plot.setXRange(start_time, end_time, padding=0)
 
     def clear_data(self) -> None:

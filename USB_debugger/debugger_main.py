@@ -4,7 +4,7 @@ import queue
 import threading
 from pathlib import Path
 
-# Support both direct execution (python USB_debugger/main.py) and package imports.
+# Support both direct execution (python USB_debugger/debugger_main.py) and package imports.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEBUGGER_DIR = Path(__file__).resolve().parent
 for _import_path in (str(_PROJECT_ROOT), str(_DEBUGGER_DIR)):
@@ -23,7 +23,6 @@ from config import (
     SERIAL_BAUDRATE,
     SERIAL_TIMEOUT,
     SIMULATOR_ENDPOINT,
-    SIMULATOR_SAMPLE_INTERVAL,
     SIMULATOR_SAMPLES_PER_PACKET,
     SAMPLE_RATE,
 )
@@ -88,7 +87,6 @@ def main():
             worker = SimulatorWorker(
                 **common_callbacks,
                 config=SimulatorConfig(
-                    sample_interval=SIMULATOR_SAMPLE_INTERVAL,
                     samples_per_packet=SIMULATOR_SAMPLES_PER_PACKET,
                     sample_rate=SAMPLE_RATE,
                 ),
