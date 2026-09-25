@@ -27,6 +27,15 @@ from ui.basics_panel import BasicsDock
 from ui.setpoint_panel import SetpointDock
 
 
+ERROR_REPLY_TYPES = frozenset({
+    MsgType.MSG_UNKNOWN_TYPE,
+    MsgType.MSG_INVALID_PAYLOAD,
+    MsgType.MSG_UNKNOWN_ID,
+    MsgType.MSG_BUFFER_OVERFLOW,
+    MsgType.MSG_ERROR,
+})
+
+
 class PlotWindow(QMainWindow):
     reply_received = Signal(object)
     serial_disconnected = Signal(object)
@@ -104,7 +113,6 @@ class PlotWindow(QMainWindow):
             [8, 1],
             Qt.Orientation.Horizontal,
         )
-
 
         self.signal_dock = SignalSelectorDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.signal_dock)
@@ -259,9 +267,27 @@ class PlotWindow(QMainWindow):
         ):
             self.enqueue_text(packet.data.text)
 
-        elif packet.msg_type == MsgType.MSG_PID_REPLY and isinstance(packet.data, PIDPayload):
-            if packet.data.kp is not None and packet.data.ki is not None and packet.data.kd is not None:
-                self.enqueue_text(str(packet.data))
+    def enqueue_command_result(
+        self,
+        request: CommandRequest | None,
+        reply: Packet | None,
+        ok: bool,
+        reason: str,
+        original_packet: Packet | None = None,
+    ):
+        self.command_result_received.emit((request, reply, ok, reason, original_packet))
+
+    def enqueue_serial_error(self, error: Exception):
+        self.serial_error_received.emit(error)
+
+    def on_reply(self, packet: Packet):
+        """Update controls from successful typed replies.
+
+        Command logging is handled by _show_command_result so the reply can be
+        displayed next to the exact command that caused it.
+        """
+        if packet.msg_type == MsgType.MSG_PID_REPLY and isinstance(packet.data, PIDPayload):
+            if packet.valid and packet.data.kp is not None and packet.data.ki is not None and packet.data.kd is not None:
                 self.pid_dock.set_pid_values(
                     packet.data.controller_id,
                     packet.data.kp,
@@ -301,6 +327,57 @@ class PlotWindow(QMainWindow):
     def _on_controls_stop_logging(self):
         if self._transport_ready:
             self.plot_panel.set_logging_active(False)
+
+    @staticmethod
+    def _packet_name(packet: Packet | None) -> str:
+        if packet is None:
+            return "NO_REPLY"
+        return getattr(packet.msg_type, "name", str(packet.msg_type))
+
+    @staticmethod
+    def _reply_detail(packet: Packet | None) -> str:
+        if packet is None:
+            return ""
+        raw = packet.raw_payload.hex(" ") if packet.raw_payload else "<empty>"
+        return f"{PlotWindow._packet_name(packet)} data={packet.data!r} payload=[{raw}]"
+
+    def _show_command_result(self, event):
+        request, reply, ok, reason, original_packet = event
+
+        if request is None:
+            if config.VERBOSITY == "errors":
+                self.enqueue_text(f"ERROR: {reason}")
+            else:
+                self.enqueue_text(f"ERROR: {reason}")
+            return
+
+        command_wire = request.wire_bytes.hex(" ")
+        command_line = f"{request.description} packet=[{command_wire}]"
+
+        if config.VERBOSITY != "errors" or not ok:
+            if reply is not None:
+                # self.enqueue_text(f"Received packet: {self._packet_name(reply)}")
+                self.enqueue_text(f"Sent Command: {command_line}. Reply: {self._reply_detail(reply)}")
+            else:
+                self.enqueue_text(f"Sent Command: {command_line}: NO_REPLY")
+
+        if not ok:
+            detail = reason or self._reply_detail(reply) or "command failed"
+            self.enqueue_text(f"ERROR: {command_line}: {detail}")
+
+        # A text reply has useful human-readable content in addition to the
+        # packet details above.
+        if (
+            ok
+            and reply is not None
+            and reply.msg_type == MsgType.MSG_TEXT_REPLY
+            and isinstance(reply.data, TextPayload)
+            and config.VERBOSITY != "errors"
+        ):
+            self.enqueue_text(f"Text reply: {reply.data.text.rstrip()}")
+
+    def _show_serial_error(self, error: Exception):
+        self.enqueue_text(f"ERROR: Serial error: {error}")
 
     def _handle_text_command(self, cmd: str):
         cmd = cmd.strip()

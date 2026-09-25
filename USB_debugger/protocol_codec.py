@@ -81,7 +81,6 @@ def mask_bytes_to_int(mask: bytes | bytearray) -> int:
     """Convert little-endian mask bytes to an integer."""
     return int.from_bytes(mask, byteorder="little")
 
-
 def mask_int_to_bytes(mask: int, length: int = SIGNAL_MASK_BYTES) -> bytes:
     """Convert an integer to a fixed-length little-endian mask."""
     if mask < 0:
@@ -90,7 +89,6 @@ def mask_int_to_bytes(mask: int, length: int = SIGNAL_MASK_BYTES) -> bytes:
         return mask.to_bytes(length, byteorder="little")
     except OverflowError as exc:
         raise ValueError(f"mask does not fit in {length} bytes") from exc
-
 
 class ProtocolCodec:
     """Packet framing plus message-specific payload encoding and decoding."""
