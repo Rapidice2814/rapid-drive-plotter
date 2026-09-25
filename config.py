@@ -5,6 +5,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 SERIAL_BAUDRATE = 115200
 SERIAL_TIMEOUT = 0.1
 
+# Poll the driver's current state at this interval while connected.
+STATE_POLL_INTERVAL_SECONDS = 1.0
+
 # Timestamp frequency of individual telemetry samples.
 SAMPLE_RATE = 8000.0
 

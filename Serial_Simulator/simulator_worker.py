@@ -18,6 +18,7 @@ from USB_debugger.protocol_definitions import (
     SIGNAL_MASK_BYTES,
     VAR_ID_LIST,
     MsgType,
+    FOCState,
 )
 
 
@@ -81,7 +82,7 @@ class SimulatorWorker:
         self._command_buffer = bytearray()
         self._stop_event = threading.Event()
         self._logging = False
-        self._state = 0
+        self._state = int(FOCState.FOC_STATE_IDLE)
         self._control_mode = "idle"
         self._timestamp = 0
         self._started_at = time.monotonic()
@@ -170,7 +171,7 @@ class SimulatorWorker:
 
         payload = raw_packet.payload_bytes
         if msg_type == MsgType.MSG_GET_VERSION:
-            self._reply(MsgType.MSG_VERSION_REPLY, b"Simulator firmware 1.0")
+            self._reply(MsgType.MSG_VERSION_REPLY, bytes((1, 0, 0)))
         elif msg_type == MsgType.MSG_SET_MASK:
             if len(payload) != SIGNAL_MASK_BYTES:
                 self._invalid_payload(msg_type)
@@ -179,11 +180,9 @@ class SimulatorWorker:
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_START_LOG:
             self._logging = True
-            self._state = 1
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_STOP_LOG:
             self._logging = False
-            self._state = 0
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_PID:
             if len(payload) != 1:
@@ -232,10 +231,17 @@ class SimulatorWorker:
                 self._text_response(text_command).encode("utf-8"),
             )
         elif msg_type == MsgType.MSG_SET_STATE:
-            if not payload:
+            if len(payload) != 1:
                 self._invalid_payload(msg_type)
                 return
-            self._state = 1 if payload[0] else 0
+            try:
+                state = FOCState(payload[0])
+                if state == FOCState.FOC_STATE_COUNT:
+                    raise ValueError("FOC_STATE_COUNT is not a runtime state")
+                self._state = int(state)
+            except ValueError:
+                self._reply(MsgType.MSG_UNKNOWN_ID, bytes((payload[0],)))
+                return
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_STATE:
             self._reply(MsgType.MSG_STATE_REPLY, bytes((self._state,)))
@@ -244,6 +250,10 @@ class SimulatorWorker:
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_FLASH_LOAD:
             self._variables = dict(self._saved_variables)
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_ENDER_BOOTLOADER:
+            self._logging = False
+            self._state = int(FOCState.FOC_STATE_BOOTLOADER)
             self._ack(msg_type)
         else:
             # The simulator acknowledges commands it does not model, just as a
@@ -256,15 +266,15 @@ class SimulatorWorker:
         if lowered in ("help", "?"):
             return "Simulator commands: help, version, state, status; Mo/Ms/Mp; Sq/Ss/Sp<number>"
         if lowered == "version":
-            return "Simulator firmware 1.0"
+            return "Simulator firmware 1.0.0"
         if lowered in ("state", "status"):
-            state = "RUNNING" if self._state else "IDLE"
-            return f"Simulator state: {state}; control mode: {self._control_mode}"
+            state_name = FOCState(self._state).name.removeprefix("FOC_STATE_")
+            return f"Simulator state: {state_name}; control mode: {self._control_mode}"
 
         modes = {"mo": "open loop", "ms": "speed", "mp": "position"}
         if lowered in modes:
             self._control_mode = modes[lowered]
-            self._state = 1
+            self._state = int(FOCState.FOC_STATE_RUN)
             return f"Simulator control mode: {self._control_mode}"
 
         setpoint = re.fullmatch(r"(?i)(Sq|Sd|Ss|Sp)([-+]?(?:\d+(?:\.\d*)?|\.\d+))", command)

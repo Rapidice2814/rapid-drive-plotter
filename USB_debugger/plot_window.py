@@ -3,7 +3,15 @@ from typing import Any, Callable
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
 
-from protocol_codec import LogPayload, PIDPayload, Packet, TextPayload, VarPayload
+from protocol_codec import (
+    LogPayload,
+    PIDPayload,
+    Packet,
+    StatePayload,
+    TextPayload,
+    VarPayload,
+    VersionPayload,
+)
 from protocol_definitions import MsgType
 
 from serial_worker import SerialWorker
@@ -15,11 +23,13 @@ from ui.plot_panel import PlotPanel
 from ui.control_panel import ControlDock
 from ui.variable_panel import VarDock
 from ui.connect_panel import SerialConnectDock
+from ui.basics_panel import BasicsDock
 
 
 class PlotWindow(QMainWindow):
     reply_received = Signal(object)
     serial_disconnected = Signal()
+    transport_ready = Signal()
 
     def __init__(self):
         super().__init__()
@@ -36,6 +46,7 @@ class PlotWindow(QMainWindow):
         # Qt queues these calls when emitted from the serial worker thread.
         self.reply_received.connect(self.on_reply)
         self.serial_disconnected.connect(self._handle_serial_disconnected)
+        self.transport_ready.connect(self._handle_transport_ready)
 
     def set_command_sender(self, sender: Callable[[Packet], None]):
         self.on_command = sender
@@ -62,6 +73,8 @@ class PlotWindow(QMainWindow):
             self.control_dock.on_command = self.on_command
         if hasattr(self, "var_dock"):
             self.var_dock.on_command = self.on_command
+        if hasattr(self, "basics_dock"):
+            self.basics_dock.on_command = self.on_command
 
     def _build_ui(self):
         self.plot_panel = PlotPanel(self)
@@ -104,9 +117,15 @@ class PlotWindow(QMainWindow):
         self.var_dock = VarDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.var_dock)
 
-        self.tabifyDockWidget(self.control_dock, self.pid_dock)
-        self.tabifyDockWidget(self.control_dock, self.var_dock)
-        self.control_dock.raise_()
+        self.basics_dock = BasicsDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.basics_dock)
+
+        # Anchor the tab group on Basics so it appears first and is selected
+        # when the application opens.
+        self.tabifyDockWidget(self.basics_dock, self.control_dock)
+        self.tabifyDockWidget(self.basics_dock, self.pid_dock)
+        self.tabifyDockWidget(self.basics_dock, self.var_dock)
+        self.basics_dock.raise_()
 
     def _on_connect_clicked(self, port: str):
         if self.worker is not None:
@@ -114,6 +133,7 @@ class PlotWindow(QMainWindow):
 
         if self.start_connection_callback is not None:
             self.plot_panel.clear_data()
+            self.basics_dock.begin_connection()
             self.start_connection_callback(port)
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(
@@ -127,6 +147,7 @@ class PlotWindow(QMainWindow):
 
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(False)
+        self.basics_dock.set_disconnected()
 
     def set_worker(self, worker: Any | None):
         self.worker = worker
@@ -151,10 +172,32 @@ class PlotWindow(QMainWindow):
         # The worker owns and closes its serial handle in its finally block.
         self.worker = None
         self.connect_dock.set_connected(False)
+        self.basics_dock.set_disconnected()
+
+    @Slot()
+    def _handle_transport_ready(self) -> None:
+        self.basics_dock.transport_ready()
 
     @Slot(object)
     def on_reply(self, packet: Packet):
-        if packet.msg_type == MsgType.MSG_TEXT_REPLY and isinstance(packet.data, TextPayload):
+        if (
+            packet.msg_type == MsgType.MSG_VERSION_REPLY
+            and isinstance(packet.data, VersionPayload)
+        ):
+            self.basics_dock.set_version(
+                packet.data.major, packet.data.minor, packet.data.patch
+            )
+
+        elif (
+            packet.msg_type == MsgType.MSG_STATE_REPLY
+            and isinstance(packet.data, StatePayload)
+        ):
+            self.basics_dock.set_state(packet.data.state)
+
+        elif (
+            packet.msg_type == MsgType.MSG_TEXT_REPLY
+            and isinstance(packet.data, TextPayload)
+        ):
             self.enqueue_text(packet.data.text)
 
         elif packet.msg_type == MsgType.MSG_PID_REPLY and isinstance(packet.data, PIDPayload):

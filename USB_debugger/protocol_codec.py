@@ -53,11 +53,21 @@ class TextPayload:
     text: str
 
 @dataclass
+class VersionPayload:
+    major: int
+    minor: int
+    patch: int
+
+@dataclass
+class StatePayload:
+    state: int
+
+@dataclass
 class RawPacket:
     msg_type_int: int
     payload_bytes: bytes
 
-DecodedPayload: TypeAlias = LogPayload | PIDPayload | TextPayload | VarPayload
+DecodedPayload: TypeAlias = LogPayload | PIDPayload | TextPayload | VarPayload | VersionPayload | StatePayload
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
 @dataclass
@@ -226,11 +236,13 @@ class ProtocolCodec:
             MsgType.MSG_PID_REPLY: self._decode_pid_payload,
             MsgType.MSG_TEXT_REPLY: self._decode_text_payload,
             MsgType.MSG_VAR_REPLY: self._decode_var_payload,
+            MsgType.MSG_VERSION_REPLY: self._decode_version_payload,
+            MsgType.MSG_STATE_REPLY: self._decode_state_payload,
         }.get(msg_type_int)
 
         if decoder is None:
-            # Preserve known-but-not-yet-decoded messages (ACK, version/state,
-            # device errors, etc.) so callers can inspect or log their bytes.
+            # Preserve known-but-not-yet-decoded messages (ACK, device errors,
+            # etc.) so callers can inspect or log their bytes.
             _LOG.debug("No payload decoder for message type %s", msg_type_int.name)
             return Packet(msg_type=msg_type_int, data=raw_packet.payload_bytes)
 
@@ -251,6 +263,7 @@ class ProtocolCodec:
                 MsgType.MSG_STOP_LOG,
                 MsgType.MSG_FLASH_SAVE,
                 MsgType.MSG_FLASH_LOAD,
+                MsgType.MSG_ENDER_BOOTLOADER,
                 MsgType.MSG_GET_STATE,
             }
             if msg_type not in empty_payload_types:
@@ -278,7 +291,7 @@ class ProtocolCodec:
             payload = self._encode_var_payload(data)
         elif isinstance(data, bytes):
             # Raw payload escape hatch for message types whose wire layout is
-            # not yet modeled (e.g. version/state replies and error messages).
+            # not modeled here (e.g. error messages).
             payload = data
         else:
             raise TypeError(
@@ -286,6 +299,20 @@ class ProtocolCodec:
             )
 
         return RawPacket(msg_type_int=int(msg_type), payload_bytes=payload)
+
+    @staticmethod
+    def _decode_version_payload(payload: bytes) -> VersionPayload | None:
+        if len(payload) != 3:
+            _LOG.warning("Invalid VERSION_REPLY payload length: %d, expected 3", len(payload))
+            return None
+        return VersionPayload(major=payload[0], minor=payload[1], patch=payload[2])
+
+    @staticmethod
+    def _decode_state_payload(payload: bytes) -> StatePayload | None:
+        if len(payload) != 1:
+            _LOG.warning("Invalid STATE_REPLY payload length: %d, expected 1", len(payload))
+            return None
+        return StatePayload(state=payload[0])
 
     def _decode_log_payload(self, payload: bytes, log_mask: bytes | bytearray | None = None) -> LogPayload | None:
         if len(payload) < _LOG_HEADER.size:

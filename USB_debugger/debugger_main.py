@@ -112,6 +112,7 @@ def main():
         # is ready and its stale command queue has been cleared.
         selected_mask = bytes(plot.signal_dock.current_mask)
         initialization_packets = (
+            Packet(msg_type=MsgType.MSG_GET_VERSION, data=None),
             Packet(msg_type=MsgType.MSG_STOP_LOG, data=None),
             Packet(msg_type=MsgType.MSG_SET_MASK, data=selected_mask),
             Packet(msg_type=MsgType.MSG_START_LOG, data=None),
@@ -124,6 +125,7 @@ def main():
         def on_worker_ready():
             for command in initialization_commands:
                 command_queue.put(command)
+            plot.transport_ready.emit()
 
         common_callbacks = {
             "command_queue": command_queue,
