@@ -9,8 +9,8 @@ from typing import TypeAlias
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from config import TIMESTAMP_HZ
 from protocol_codec import LogPayload
@@ -20,15 +20,33 @@ _MAX_BUFFER_SAMPLES = 100_000
 _MAX_QUEUED_PAYLOADS = 512
 _MAX_PAYLOADS_PER_TICK = 500
 _UPDATE_INTERVAL_MS = 50
+_DEFAULT_WINDOW_SECONDS = 5.0
 
 NumericBuffer: TypeAlias = deque[int | float]
 
 
-class PlotPanel(QWidget):
-    """Plot selected log signals with bounded memory and GUI-thread updates.
+class _InteractiveViewBox(pg.ViewBox):
+    """ViewBox that reports manual mouse navigation to the plot widget."""
 
-    ``enqueue_log`` is safe to call from the serial worker thread. All plot
-    objects are only touched by the Qt timer on the GUI thread.
+    userInteracted = Signal()
+
+    def wheelEvent(self, event, axis=None) -> None:
+        self.userInteracted.emit()
+        super().wheelEvent(event, axis)
+
+    def mouseDragEvent(self, event, axis=None) -> None:
+        if event.isStart():
+            self.userInteracted.emit()
+        super().mouseDragEvent(event, axis)
+
+
+class PlotPanel(QWidget):
+    """Live chart with optional auto-follow and a sample-based time axis.
+
+    ``enqueue_log`` is safe to call from the serial worker thread. Plot objects
+    are only touched on the GUI thread by the timer. X values are generated from
+    received sample counts; the device-provided timestamp is intentionally not
+    used, so a device restart cannot move the plotted time backwards.
     """
 
     def __init__(
@@ -51,21 +69,52 @@ class PlotPanel(QWidget):
         )
         self.dropped_payloads = 0
         self._signal_names: tuple[str, ...] = ()
-        self._last_timestamp_raw: int | None = None
-        self._timestamp_wrap_offset = 0
+        self._samples_received = 0
+        self._auto_follow = True
         self.time_buffer: deque[float] = deque(maxlen=max_samples)
         self.data_buffers: dict[str, NumericBuffer] = {}
         self.curves: dict[str, pg.PlotDataItem] = {}
 
         layout = QVBoxLayout(self)
+        toolbar = QHBoxLayout()
+        self.auto_follow_button = QPushButton("Auto follow")
+        self.auto_follow_button.setCheckable(True)
+        self.auto_follow_button.setChecked(True)
+        self.auto_follow_button.setToolTip(
+            "Follow incoming data. Manual pan/zoom pauses following; click to resume."
+        )
+        self.auto_follow_button.toggled.connect(self._set_auto_follow)
+        toolbar.addWidget(self.auto_follow_button)
+        toolbar.addWidget(QLabel("Window:"))
+
+        self.window_seconds = QDoubleSpinBox()
+        self.window_seconds.setRange(
+            min(0.1, max_samples / TIMESTAMP_HZ), max_samples / TIMESTAMP_HZ
+        )
+        self.window_seconds.setDecimals(1)
+        self.window_seconds.setSingleStep(0.5)
+        self.window_seconds.setValue(
+            min(_DEFAULT_WINDOW_SECONDS, max_samples / TIMESTAMP_HZ)
+        )
+        self.window_seconds.setSuffix(" s")
+        self.window_seconds.setToolTip(
+            "Visible time span while Auto follow is on; bounded by the plot history buffer."
+        )
+        self.window_seconds.valueChanged.connect(self._on_window_changed)
+        toolbar.addWidget(self.window_seconds)
+        toolbar.addStretch(1)
+        layout.addLayout(toolbar)
+
         self.graph = pg.GraphicsLayoutWidget(self)
         layout.addWidget(self.graph)
-
-        self.plot = self.graph.addPlot(title="Live Data")
+        self.view_box = _InteractiveViewBox()
+        self.plot = self.graph.addPlot(title="Live Data", viewBox=self.view_box)
+        self.view_box.userInteracted.connect(self._pause_auto_follow)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.setDownsampling(auto=True, mode="peak")
         self.plot.setClipToView(True)
         self.plot.addLegend()
+        self.plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._drain_queue_and_update)
@@ -76,8 +125,12 @@ class PlotPanel(QWidget):
         """Signal names currently represented by the incoming payloads."""
         return self._signal_names
 
+    @property
+    def auto_follow_enabled(self) -> bool:
+        return self._auto_follow
+
     def enqueue_log(self, payload: LogPayload) -> None:
-        """Queue a decoded payload; discard the oldest plot-only data on overload."""
+        """Queue a decoded payload; discard oldest plot-only data on overload."""
         try:
             self._payload_queue.put_nowait(payload)
         except queue.Full:
@@ -127,41 +180,19 @@ class PlotPanel(QWidget):
         if names != self._signal_names:
             self._reset_signal_history(names)
 
-        # Timestamp is an unsigned 32-bit device tick count. Unwrap rollover so
-        # the plotted time remains monotonic during long-running captures.
-        timestamp = payload.timestamp
-        if not 0 <= timestamp <= 0xFFFFFFFF:
-            _LOG.warning("Ignoring log payload with invalid timestamp: %s", timestamp)
-            return
-        if (
-            self._last_timestamp_raw is not None
-            and timestamp < self._last_timestamp_raw
-        ):
-            if self._last_timestamp_raw - timestamp > 0x80000000:
-                self._timestamp_wrap_offset += 0x1_0000_0000
-            else:
-                # The device timer restarted without a new signal mask.
-                self.time_buffer.clear()
-                for buffer in self.data_buffers.values():
-                    buffer.clear()
-                for curve in self.curves.values():
-                    curve.setData([], [])
-                self._timestamp_wrap_offset = 0
-        self._last_timestamp_raw = timestamp
-        unwrapped_timestamp = self._timestamp_wrap_offset + timestamp
-
-        # Use tick offsets before converting to seconds to avoid cumulative
-        # floating-point drift within each packet.
-        first_time = unwrapped_timestamp / TIMESTAMP_HZ
+        # Device timestamp is deliberately ignored. Establish a monotonic,
+        # relative time axis from the number of received samples instead.
+        first_sample = self._samples_received
         self.time_buffer.extend(
-            first_time + sample_index / TIMESTAMP_HZ
+            (first_sample + sample_index) / TIMESTAMP_HZ
             for sample_index in range(payload.sample_count)
         )
         for name in self._signal_names:
             self.data_buffers[name].extend(payload.signals[name])
+        self._samples_received += payload.sample_count
 
     def _reset_signal_history(self, names: tuple[str, ...]) -> None:
-        """Start a fresh aligned history when the device changes its log mask."""
+        """Start aligned signal history when the selected signal set changes."""
         self._signal_names = names
         self.time_buffer.clear()
         self.data_buffers = {
@@ -181,6 +212,34 @@ class PlotPanel(QWidget):
                     name=name,
                 )
 
+    def _set_auto_follow(self, enabled: bool) -> None:
+        self._auto_follow = enabled
+        if enabled:
+            self.plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+            self._update_follow_range()
+        else:
+            # Preserve the current view and prevent y auto-ranging from
+            # overriding deliberate manual navigation.
+            self.plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+
+    def _pause_auto_follow(self) -> None:
+        if self._auto_follow:
+            self.auto_follow_button.setChecked(False)
+
+    def _on_window_changed(self, _value: float) -> None:
+        if self._auto_follow:
+            self._update_follow_range()
+
+    def _update_follow_range(self) -> None:
+        if not self._auto_follow:
+            return
+        end_time = self._samples_received / TIMESTAMP_HZ
+        window = self.window_seconds.value()
+        start_time = max(0.0, end_time - window)
+        if end_time <= start_time:
+            end_time = start_time + 1.0 / TIMESTAMP_HZ
+        self.plot.setXRange(start_time, end_time, padding=0)
+
     def clear_data(self) -> None:
         """Clear plot history and pending payloads, e.g. before reconnecting."""
         while True:
@@ -193,8 +252,9 @@ class PlotPanel(QWidget):
             buffer.clear()
         for curve in self.curves.values():
             curve.setData([], [])
-        self._last_timestamp_raw = None
-        self._timestamp_wrap_offset = 0
+        self._samples_received = 0
+        if self._auto_follow:
+            self._update_follow_range()
 
     def _update_plot(self) -> None:
         if not self._signal_names or not self.time_buffer:
@@ -203,12 +263,15 @@ class PlotPanel(QWidget):
         x = np.fromiter(self.time_buffer, dtype=np.float64)
         for name in self._signal_names:
             y = np.fromiter(self.data_buffers[name], dtype=np.float64)
-            # These buffers are reset together whenever the selected signal set
-            # changes, so unequal sizes indicate malformed input/state.
             if x.size != y.size:
                 _LOG.error("Plot buffers lost alignment for signal %s", name)
                 continue
             self.curves[name].setData(x, y)
 
+        if self._auto_follow:
+            self._update_follow_range()
+
     def reset_zoom(self) -> None:
-        self.plot.autoRange()
+        """Restore time-window auto-follow (also used by the controls dock)."""
+        self.auto_follow_button.setChecked(True)
+        self._update_follow_range()
