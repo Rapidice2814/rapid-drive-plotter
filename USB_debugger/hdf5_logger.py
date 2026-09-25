@@ -10,13 +10,15 @@ import h5py
 import numpy as np
 
 from protocol_codec import LogPayload
+from config import LOG_FOLDER
 
 _LOG = logging.getLogger(__name__)
 
 
-def get_log_filename() -> Path:
+def get_log_filename(log_folder: Path | str | None = None) -> Path:
+    """Return a unique HDF5 filename in the configured telemetry folder."""
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S_%f")
-    log_dir = Path("logs")
+    log_dir = Path(LOG_FOLDER if log_folder is None else log_folder)
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"debug_log_{timestamp}.h5"
 
@@ -170,7 +172,6 @@ class HDF5LogLogger:
         last_flush = time.monotonic()
 
         try:
-            self._open_file()
             while not self.stop_event.is_set() or not self.queue.empty():
                 timeout = max(
                     0.0,
@@ -185,16 +186,28 @@ class HDF5LogLogger:
                     pass
 
                 now = time.monotonic()
-                if batch and (
+                should_flush = bool(batch) and (
                     len(batch) >= self.batch_size
                     or (now - last_flush) >= self.flush_interval
                     or (self.stop_event.is_set() and batch)
-                ):
-                    self._flush_batch(batch)
+                )
+                if should_flush:
+                    try:
+                        self._open_file()
+                        self._flush_batch(batch)
+                    except Exception:
+                        # Retain the payloads and retry after the next flush
+                        # interval, allowing transient file contention to pass.
+                        if not self.stop_event.is_set():
+                            _LOG.exception("Unable to flush HDF5 log batch; will retry")
+                            time.sleep(min(self.flush_interval, 0.1))
+                            continue
+                        raise
                     batch.clear()
                     last_flush = now
 
             if batch:
+                self._open_file()
                 self._flush_batch(batch)
         except Exception:
             _LOG.exception("HDF5 logging worker failed")

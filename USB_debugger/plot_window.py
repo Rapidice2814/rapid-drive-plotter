@@ -26,6 +26,7 @@ class PlotWindow(QMainWindow):
 
         self.on_command: Callable[[Packet], None] = lambda _pkt: None
         self.start_connection_callback: Callable[[str], None] | None = None
+        self.logging_toggle_callback: Callable[[bool], None] | None = None
         self.worker: Any | None = None
 
         self.setWindowTitle("Serial Plotter")
@@ -44,6 +45,13 @@ class PlotWindow(QMainWindow):
         self.start_connection_callback = callback
         if hasattr(self, "connect_dock"):
             self.connect_dock.on_connect = callback
+
+    def set_logging_toggle_callback(self, callback: Callable[[bool], None]):
+        self.logging_toggle_callback = callback
+
+    def _on_logging_toggled(self, enabled: bool):
+        if self.logging_toggle_callback is not None:
+            self.logging_toggle_callback(enabled)
 
     def _refresh_command_targets(self):
         if hasattr(self, "signal_dock"):
@@ -66,6 +74,8 @@ class PlotWindow(QMainWindow):
             self._on_disconnect_clicked,
             self,
         )
+
+        self.connect_dock.save_log_checkbox.toggled.connect(self._on_logging_toggled)
 
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.command_dock)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.connect_dock)

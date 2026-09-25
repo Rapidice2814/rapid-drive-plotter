@@ -24,12 +24,14 @@ class SerialWorker:
         data_callback: Optional[Callable[[bytearray], None]] = None,
         error_callback: Optional[Callable[[Exception], None]] = None,
         disconnect_callback: Optional[Callable[[], None]] = None,
+        ready_callback: Optional[Callable[[], None]] = None,
     ):
         self.config = config
         self.command_queue = command_queue
         self.data_callback = data_callback
         self.error_callback = error_callback
         self.disconnect_callback = disconnect_callback
+        self.ready_callback = ready_callback
 
         self.ser: Optional[serial.Serial] = None
         self.rx_buffer = bytearray()
@@ -102,6 +104,10 @@ class SerialWorker:
     def _run(self) -> None:
         try:
             self.open()
+            # The port is open and stale queued commands are gone. Notify the
+            # GUI-prepared initialization commands before processing traffic.
+            if self.ready_callback is not None:
+                self.ready_callback()
 
             while not self.stop_flag:
                 self._process_command_queue()

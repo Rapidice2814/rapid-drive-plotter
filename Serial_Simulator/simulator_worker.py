@@ -58,11 +58,13 @@ class SimulatorWorker:
         error_callback: Optional[Callable[[Exception], None]] = None,
         disconnect_callback: Optional[Callable[[], None]] = None,
         config: SimulatorConfig | None = None,
+        ready_callback: Optional[Callable[[], None]] = None,
     ):
         self.command_queue = command_queue
         self.data_callback = data_callback
         self.error_callback = error_callback
         self.disconnect_callback = disconnect_callback
+        self.ready_callback = ready_callback
         self.config = config or SimulatorConfig()
         max_samples_per_packet = (0xFFFF - struct.calcsize("<IHH")) // (
             4 * len(FOC_USB_DEBUG_SIGNAL_LIST)
@@ -111,6 +113,10 @@ class SimulatorWorker:
     def _run(self) -> None:
         try:
             self._clear_command_queue()
+            # Discard stale traffic before allowing the caller to queue the
+            # initial signal mask and logging commands.
+            if self.ready_callback is not None:
+                self.ready_callback()
             packet_interval = (
                 self.config.samples_per_packet / self.config.sample_rate
             )

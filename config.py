@@ -1,3 +1,7 @@
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 SERIAL_BAUDRATE = 115200
 SERIAL_TIMEOUT = 0.1
 
@@ -9,3 +13,6 @@ SAMPLE_RATE = 8000.0
 ENABLE_SIMULATOR = True
 SIMULATOR_ENDPOINT = "__simulator__"
 SIMULATOR_SAMPLES_PER_PACKET = 20
+
+# HDF5 telemetry output directory (default: the project-root logs folder).
+LOG_FOLDER = PROJECT_ROOT / "logs"

@@ -1,6 +1,14 @@
 from typing import Callable
 
-from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QComboBox, QPushButton, QLabel
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDockWidget,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from PySide6.QtCore import Qt
 
 from serial_worker import SerialWorker
@@ -35,6 +43,8 @@ class SerialConnectDock(QDockWidget):
         self.refresh_btn = QPushButton("Refresh Ports")
         self.connect_btn = QPushButton("Connect")
         self.disconnect_btn = QPushButton("Disconnect")
+        self.save_log_checkbox = QCheckBox("Save telemetry to HDF5 log file")
+        self.save_log_checkbox.setChecked(False)
         self.disconnect_btn.setEnabled(False)
 
         layout.addWidget(self.status_label)
@@ -43,6 +53,7 @@ class SerialConnectDock(QDockWidget):
         layout.addWidget(self.refresh_btn)
         layout.addWidget(self.connect_btn)
         layout.addWidget(self.disconnect_btn)
+        layout.addWidget(self.save_log_checkbox)
 
         self.refresh_btn.clicked.connect(self.refresh_ports)
         self.connect_btn.clicked.connect(self._connect)
