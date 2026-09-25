@@ -7,11 +7,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 
 
+from config import TIMESTAMP_HZ
 from protocol_codec import LogPayload
-
-
-LOG_FREQ = 8000
-LOG_DT = 1.0 / LOG_FREQ
 
 
 class PlotPanel(QWidget):
@@ -57,8 +54,8 @@ class PlotPanel(QWidget):
             self._update_plot()
 
     def _handle_log_payload(self, payload: LogPayload):
-        start_t = payload.timestamp / LOG_FREQ
-        self.time_buffer.extend(start_t + i * LOG_DT for i in range(payload.sample_count))
+        start_t = payload.timestamp / TIMESTAMP_HZ
+        self.time_buffer.extend(start_t + i * (1.0 / TIMESTAMP_HZ) for i in range(payload.sample_count))
 
         for name, values in payload.signals.items():
             self.data_buffers[name].extend(values)

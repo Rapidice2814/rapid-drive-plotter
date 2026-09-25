@@ -4,6 +4,7 @@ SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
 SIGNAL_MASK_BYTES = 8
+
 FOC_USB_DEBUG_SIGNAL_LIST = [
     {"bit": 0,  "type": "u32",   "name": "timestamp"},
     {"bit": 1,  "type": "f",     "name": "adc_values.motor_temp"},

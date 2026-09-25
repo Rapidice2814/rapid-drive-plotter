@@ -9,6 +9,8 @@ from serial_worker import SerialWorker, SerialConfig
 from hdf5_logger import HDF5LogLogger, get_log_filename
 from plot_window import PlotWindow
 
+from config import SERIAL_BAUDRATE, SERIAL_TIMEOUT
+
 
 def main():
     app = QApplication(sys.argv)
@@ -54,7 +56,7 @@ def main():
         stop_serial(join=True)
 
         worker = SerialWorker(
-            config=SerialConfig(port=port, baudrate=115200, timeout=0.1),
+            config=SerialConfig(port=port, baudrate=SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT),
             command_queue=command_queue,
             data_callback=on_data,
             error_callback=lambda e: print(f"Serial error: {e}"),
