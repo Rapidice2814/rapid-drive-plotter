@@ -1,4 +1,14 @@
-from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLineEdit, QTextEdit, QLabel, QCheckBox
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDockWidget,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 
@@ -32,7 +42,13 @@ class CommandDock(QDockWidget):
         layout.addWidget(QLabel("Command:"))
         layout.addWidget(self.command_input)
         layout.addWidget(self.autoscroll_checkbox)
-        layout.addWidget(QLabel("Output:"))
+        output_header = QHBoxLayout()
+        output_header.addWidget(QLabel("Output:"))
+        output_header.addStretch()
+        self.clear_output_button = QPushButton("Clear output")
+        self.clear_output_button.clicked.connect(lambda: self.command_log.clear())
+        output_header.addWidget(self.clear_output_button)
+        layout.addLayout(output_header)
         layout.addWidget(self.command_log)
 
         self.setWidget(panel)

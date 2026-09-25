@@ -9,10 +9,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from serial_worker import SerialWorker
-from config import ENABLE_SIMULATOR, SIMULATOR_ENDPOINT
+from config import (
+    ENABLE_SIMULATOR,
+    PORT_REFRESH_INTERVAL_SECONDS,
+    SIMULATOR_ENDPOINT,
+)
 
 
 class SerialConnectDock(QDockWidget):
@@ -62,15 +66,54 @@ class SerialConnectDock(QDockWidget):
         self.setWidget(panel)
         self.refresh_ports()
 
+        self.port_refresh_timer = QTimer(self)
+        self.port_refresh_timer.setInterval(
+            max(1, round(PORT_REFRESH_INTERVAL_SECONDS * 1000))
+        )
+        self.port_refresh_timer.timeout.connect(self._refresh_ports_if_disconnected)
+        self.port_refresh_timer.start()
+
+    def _selected_endpoint(self):
+        endpoint = self.port_combo.currentData()
+        return endpoint if endpoint is not None else self.port_combo.currentText()
+
     def refresh_ports(self):
+        selected_endpoint = self._selected_endpoint()
         self.port_combo.clear()
         ports = SerialWorker.list_available_ports()
-        self.port_combo.addItems(ports)
+        for port in ports:
+            self.port_combo.addItem(port, port)
+        simulator_index = -1
         if ENABLE_SIMULATOR:
+            simulator_index = self.port_combo.count()
             self.port_combo.addItem("Simulator (Test Mode)", SIMULATOR_ENDPOINT)
+
+        # Keep a selected physical port when it remains available. If the
+        # simulator was selected but a real port is now present, prefer the
+        # first real port instead. The simulator is selected only when no
+        # physical ports are available.
+        selected_index = -1
+        if selected_endpoint in ports:
+            selected_index = ports.index(selected_endpoint)
+        elif ports:
+            selected_index = 0
+        elif selected_endpoint == SIMULATOR_ENDPOINT:
+            selected_index = simulator_index
+        elif simulator_index >= 0:
+            selected_index = simulator_index
+        if selected_index >= 0:
+            self.port_combo.setCurrentIndex(selected_index)
+
+    def _refresh_ports_if_disconnected(self):
+        if not self.connected:
+            self.refresh_ports()
 
     def set_connected(self, connected: bool, simulator: bool = False):
         self.connected = connected
+        if connected:
+            self.port_refresh_timer.stop()
+        else:
+            self.port_refresh_timer.start()
         if connected:
             if simulator:
                 self.status_label.setText("Status: Connected (Simulator)")

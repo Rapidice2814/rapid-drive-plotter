@@ -24,11 +24,12 @@ from ui.control_panel import ControlDock
 from ui.variable_panel import VarDock
 from ui.connect_panel import SerialConnectDock
 from ui.basics_panel import BasicsDock
+from ui.setpoint_panel import SetpointDock
 
 
 class PlotWindow(QMainWindow):
     reply_received = Signal(object)
-    serial_disconnected = Signal()
+    serial_disconnected = Signal(object)
     transport_ready = Signal()
 
     def __init__(self):
@@ -38,6 +39,7 @@ class PlotWindow(QMainWindow):
         self.start_connection_callback: Callable[[str], None] | None = None
         self.logging_toggle_callback: Callable[[bool], None] | None = None
         self.worker: Any | None = None
+        self._transport_ready = False
 
         self.setWindowTitle("Serial Plotter")
         self.resize(1400, 900)
@@ -75,9 +77,12 @@ class PlotWindow(QMainWindow):
             self.var_dock.on_command = self.on_command
         if hasattr(self, "basics_dock"):
             self.basics_dock.on_command = self.on_command
+        if hasattr(self, "setpoint_dock"):
+            self.setpoint_dock.on_command = self.on_command
 
     def _build_ui(self):
         self.plot_panel = PlotPanel(self)
+        self.plot_panel.start_stop_button.clicked.connect(self._toggle_plot_logging)
         self.setCentralWidget(self.plot_panel)
 
         self.command_dock = CommandDock(self._handle_text_command, self)
@@ -112,6 +117,8 @@ class PlotWindow(QMainWindow):
             on_plot_reset=self._back_to_home,
             parent=self,
         )
+        self.control_dock.btn_start.clicked.connect(self._on_controls_start_logging)
+        self.control_dock.btn_stop.clicked.connect(self._on_controls_stop_logging)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.control_dock)
 
         self.var_dock = VarDock(self.on_command, self)
@@ -120,11 +127,17 @@ class PlotWindow(QMainWindow):
         self.basics_dock = BasicsDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.basics_dock)
 
+        self.setpoint_dock = SetpointDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.setpoint_dock)
+
         # Anchor the tab group on Basics so it appears first and is selected
         # when the application opens.
+        self.tabifyDockWidget(self.basics_dock, self.setpoint_dock)
         self.tabifyDockWidget(self.basics_dock, self.control_dock)
         self.tabifyDockWidget(self.basics_dock, self.pid_dock)
         self.tabifyDockWidget(self.basics_dock, self.var_dock)
+        self.pid_dock.visibilityChanged.connect(self._on_pid_visibility_changed)
+        self.var_dock.visibilityChanged.connect(self._on_variables_visibility_changed)
         self.basics_dock.raise_()
 
     def _on_connect_clicked(self, port: str):
@@ -132,8 +145,12 @@ class PlotWindow(QMainWindow):
             return
 
         if self.start_connection_callback is not None:
+            self._transport_ready = False
             self.plot_panel.clear_data()
+            self.plot_panel.set_transport_connected(False)
+            self.plot_panel.set_logging_active(False)
             self.basics_dock.begin_connection()
+            self.setpoint_dock.begin_connection()
             self.start_connection_callback(port)
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(
@@ -147,7 +164,11 @@ class PlotWindow(QMainWindow):
 
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(False)
+        self._transport_ready = False
+        self.plot_panel.set_transport_connected(False)
+        self.plot_panel.set_logging_active(False)
         self.basics_dock.set_disconnected()
+        self.setpoint_dock.set_disconnected()
 
     def set_worker(self, worker: Any | None):
         self.worker = worker
@@ -156,6 +177,12 @@ class PlotWindow(QMainWindow):
                 worker is not None,
                 simulator=bool(getattr(worker, "is_simulator", False)),
             )
+        if worker is None and hasattr(self, "plot_panel"):
+            self._transport_ready = False
+            self.plot_panel.set_transport_connected(False)
+            self.plot_panel.set_logging_active(False)
+            self.basics_dock.set_disconnected()
+            self.setpoint_dock.set_disconnected()
 
     def enqueue_log(self, payload: LogPayload):
         self.plot_panel.enqueue_log(payload)
@@ -167,16 +194,47 @@ class PlotWindow(QMainWindow):
         """Deliver a decoded reply on the GUI thread, even if called by a worker."""
         self.reply_received.emit(packet)
 
-    @Slot()
-    def _handle_serial_disconnected(self) -> None:
-        # The worker owns and closes its serial handle in its finally block.
+    @Slot(object)
+    def _handle_serial_disconnected(self, disconnected_worker: Any) -> None:
+        # Ignore delayed disconnect notifications from a worker that has already
+        # been stopped or replaced by a newer connection.
+        if disconnected_worker is not self.worker:
+            return
+        self._transport_ready = False
         self.worker = None
         self.connect_dock.set_connected(False)
+        self.plot_panel.set_transport_connected(False)
+        self.plot_panel.set_logging_active(False)
         self.basics_dock.set_disconnected()
+        self.setpoint_dock.set_disconnected()
 
     @Slot()
     def _handle_transport_ready(self) -> None:
+        self._transport_ready = True
+        self.plot_panel.set_transport_connected(True)
+        # Connection initialization starts telemetry logging after the port is ready.
+        self.plot_panel.set_logging_active(True)
         self.basics_dock.transport_ready()
+        self.setpoint_dock.transport_ready()
+        self._refresh_visible_data_tabs()
+
+    @Slot(bool)
+    def _on_pid_visibility_changed(self, visible: bool) -> None:
+        if visible and self._transport_ready:
+            self.pid_dock._request_all_pid_values()
+
+    @Slot(bool)
+    def _on_variables_visibility_changed(self, visible: bool) -> None:
+        if visible and self._transport_ready:
+            self.var_dock._request_all_var_values()
+
+    def _refresh_visible_data_tabs(self) -> None:
+        # A tab may already be selected while a connection is opening; read it
+        # once the transport becomes ready even if no visibility signal follows.
+        if self.pid_dock.isVisible():
+            self.pid_dock._request_all_pid_values()
+        if self.var_dock.isVisible():
+            self.var_dock._request_all_var_values()
 
     @Slot(object)
     def on_reply(self, packet: Packet):
@@ -193,6 +251,7 @@ class PlotWindow(QMainWindow):
             and isinstance(packet.data, StatePayload)
         ):
             self.basics_dock.set_state(packet.data.state)
+            self.setpoint_dock.set_driver_state(packet.data.state)
 
         elif (
             packet.msg_type == MsgType.MSG_TEXT_REPLY
@@ -214,10 +273,34 @@ class PlotWindow(QMainWindow):
             if packet.data.value is not None:
                 self.enqueue_text(str(packet.data))
                 self.var_dock.set_var_value(packet.data.var_id, packet.data.value)
+                self.setpoint_dock.set_var_value(packet.data.var_id, packet.data.value)
 
         elif isinstance(packet.data, bytes):
             # Keep known but not yet decoded replies and device errors visible.
             self.enqueue_text(f"{packet.msg_type.name}: {packet.data.hex(' ')}")
+
+    def _toggle_plot_logging(self):
+        if not self._transport_ready:
+            return
+        self._set_plot_logging_active(
+            not self.plot_panel.logging_active,
+            send_command=True,
+        )
+
+    def _set_plot_logging_active(self, active: bool, *, send_command: bool = False):
+        active = bool(active)
+        if send_command and self._transport_ready:
+            msg_type = MsgType.MSG_START_LOG if active else MsgType.MSG_STOP_LOG
+            self.on_command(Packet(msg_type=msg_type, data=None))
+        self.plot_panel.set_logging_active(active)
+
+    def _on_controls_start_logging(self):
+        if self._transport_ready:
+            self.plot_panel.set_logging_active(True)
+
+    def _on_controls_stop_logging(self):
+        if self._transport_ready:
+            self.plot_panel.set_logging_active(False)
 
     def _handle_text_command(self, cmd: str):
         cmd = cmd.strip()

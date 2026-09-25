@@ -10,7 +10,14 @@ from typing import TypeAlias
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from config import SAMPLE_RATE
 from protocol_codec import LogPayload
@@ -71,12 +78,18 @@ class PlotPanel(QWidget):
         self._signal_names: tuple[str, ...] = ()
         self._samples_received = 0
         self._auto_follow = True
+        self.logging_active = False
         self.time_buffer: deque[float] = deque(maxlen=max_samples)
         self.data_buffers: dict[str, NumericBuffer] = {}
         self.curves: dict[str, pg.PlotDataItem] = {}
 
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
+        self.start_stop_button = QPushButton("Start")
+        self.start_stop_button.setEnabled(False)
+        self.start_stop_button.setToolTip("Start telemetry logging on the driver.")
+        toolbar.addWidget(self.start_stop_button)
+
         self.auto_follow_button = QPushButton("Auto follow")
         self.auto_follow_button.setCheckable(True)
         self.auto_follow_button.setChecked(True)
@@ -119,6 +132,18 @@ class PlotPanel(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._drain_queue_and_update)
         self.timer.start(update_interval_ms)
+
+    def set_transport_connected(self, connected: bool) -> None:
+        self.start_stop_button.setEnabled(connected)
+
+    def set_logging_active(self, active: bool) -> None:
+        self.logging_active = bool(active)
+        if self.logging_active:
+            self.start_stop_button.setText("Stop")
+            self.start_stop_button.setToolTip("Stop telemetry logging on the driver.")
+        else:
+            self.start_stop_button.setText("Start")
+            self.start_stop_button.setToolTip("Start telemetry logging on the driver.")
 
     @property
     def active_signals(self) -> tuple[str, ...]:

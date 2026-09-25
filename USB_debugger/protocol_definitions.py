@@ -126,6 +126,7 @@ class MsgType(IntEnum):
     MSG_TEXT_COMMAND    = 0x11  # PC -> FOC
     MSG_TEXT_REPLY      = 0x12  # FOC -> PC
     MSG_ENDER_BOOTLOADER = 0x13  # PC -> FOC
+    MSG_FLASH_CLEAR      = 0x14  # PC -> FOC
 
     MSG_UNKNOWN_TYPE    = 0xFA  # FOC -> PC
     MSG_INVALID_PAYLOAD = 0xFB  # FOC -> PC

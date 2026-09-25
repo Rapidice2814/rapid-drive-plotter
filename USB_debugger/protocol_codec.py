@@ -264,6 +264,7 @@ class ProtocolCodec:
                 MsgType.MSG_FLASH_SAVE,
                 MsgType.MSG_FLASH_LOAD,
                 MsgType.MSG_ENDER_BOOTLOADER,
+                MsgType.MSG_FLASH_CLEAR,
                 MsgType.MSG_GET_STATE,
             }
             if msg_type not in empty_payload_types:

@@ -99,11 +99,6 @@ def main():
         if join and threading.current_thread() is not worker.thread:
             worker.join()
 
-    def worker_disconnect():
-        # Signal emission is thread-safe; the connected PlotWindow slot updates
-        # connection widgets on the GUI thread.
-        plot.serial_disconnected.emit()
-
     def start_connection(endpoint: str):
         stop_worker(join=True)
 
@@ -112,7 +107,6 @@ def main():
         # is ready and its stale command queue has been cleared.
         selected_mask = bytes(plot.signal_dock.current_mask)
         initialization_packets = (
-            Packet(msg_type=MsgType.MSG_GET_VERSION, data=None),
             Packet(msg_type=MsgType.MSG_STOP_LOG, data=None),
             Packet(msg_type=MsgType.MSG_SET_MASK, data=selected_mask),
             Packet(msg_type=MsgType.MSG_START_LOG, data=None),
@@ -126,6 +120,15 @@ def main():
             for command in initialization_commands:
                 command_queue.put(command)
             plot.transport_ready.emit()
+
+        worker_holder: dict[str, object] = {}
+
+        def worker_disconnect():
+            # Tag the notification so delayed events from an old connection
+            # cannot mark a newer connection as failed.
+            disconnecting_worker = worker_holder.get("worker")
+            if disconnecting_worker is not None:
+                plot.serial_disconnected.emit(disconnecting_worker)
 
         common_callbacks = {
             "command_queue": command_queue,
@@ -147,6 +150,7 @@ def main():
                 config=SerialConfig(port=endpoint, baudrate=SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT),
                 **common_callbacks,
             )
+        worker_holder["worker"] = worker
         plot.set_worker(worker)
         worker.start()
 

@@ -11,7 +11,11 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from config import SIMULATOR_SAMPLES_PER_PACKET, SAMPLE_RATE
+from config import (
+    COMMAND_RATE_LIMIT_SECONDS,
+    SIMULATOR_SAMPLES_PER_PACKET,
+    SAMPLE_RATE,
+)
 from USB_debugger.protocol_codec import ProtocolCodec, RawPacket
 from USB_debugger.protocol_definitions import (
     FOC_USB_DEBUG_SIGNAL_LIST,
@@ -89,6 +93,10 @@ class SimulatorWorker:
         self._pids = dict(self._DEFAULT_PIDS)
         self._variables = dict(self._DEFAULT_VARIABLES)
         self._saved_variables = dict(self._variables)
+        self._command_rate_limit_seconds = max(
+            0.0, float(COMMAND_RATE_LIMIT_SECONDS)
+        )
+        self._next_command_at = 0.0
         self.thread = threading.Thread(target=self._run, daemon=True, name="SimulatorWorker")
 
     def start(self) -> None:
@@ -125,13 +133,26 @@ class SimulatorWorker:
             was_logging = False
             while not self._stop_event.is_set():
                 did_work = False
-                while not self._stop_event.is_set():
+                if self._command_rate_limit_seconds <= 0:
+                    # Preserve the original drain-all behavior when disabled.
+                    while not self._stop_event.is_set():
+                        try:
+                            command = self.command_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        did_work = True
+                        self._handle_command_bytes(command)
+                elif time.monotonic() >= self._next_command_at:
                     try:
                         command = self.command_queue.get_nowait()
                     except queue.Empty:
-                        break
-                    did_work = True
-                    self._handle_command_bytes(command)
+                        pass
+                    else:
+                        did_work = True
+                        self._handle_command_bytes(command)
+                        self._next_command_at = (
+                            time.monotonic() + self._command_rate_limit_seconds
+                        )
 
                 now = time.monotonic()
                 if self._logging and not was_logging:
@@ -251,6 +272,11 @@ class SimulatorWorker:
         elif msg_type == MsgType.MSG_FLASH_LOAD:
             self._variables = dict(self._saved_variables)
             self._ack(msg_type)
+        elif msg_type == MsgType.MSG_FLASH_CLEAR:
+            # Clearing flash restores its contents to factory defaults. Keep
+            # the current live values unchanged until a FLASH_LOAD is requested.
+            self._saved_variables = dict(self._DEFAULT_VARIABLES)
+            self._ack(msg_type)
         elif msg_type == MsgType.MSG_ENDER_BOOTLOADER:
             self._logging = False
             self._state = int(FOCState.FOC_STATE_BOOTLOADER)
@@ -275,6 +301,9 @@ class SimulatorWorker:
         if lowered in modes:
             self._control_mode = modes[lowered]
             self._state = int(FOCState.FOC_STATE_RUN)
+            # Match the firmware behavior when switching control modes.
+            for var_id in (0, 1, 2, 3):
+                self._variables[var_id] = 0.0
             return f"Simulator control mode: {self._control_mode}"
 
         setpoint = re.fullmatch(r"(?i)(Sq|Sd|Ss|Sp)([-+]?(?:\d+(?:\.\d*)?|\.\d+))", command)

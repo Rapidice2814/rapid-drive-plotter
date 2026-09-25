@@ -8,6 +8,8 @@ import serial
 from serial import SerialException
 from serial.tools import list_ports
 
+from config import COMMAND_RATE_LIMIT_SECONDS
+
 
 @dataclass
 class SerialConfig:
@@ -36,6 +38,10 @@ class SerialWorker:
         self.ser: Optional[serial.Serial] = None
         self.rx_buffer = bytearray()
         self.stop_flag = False
+        self._command_rate_limit_seconds = max(
+            0.0, float(COMMAND_RATE_LIMIT_SECONDS)
+        )
+        self._next_command_at = 0.0
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     @staticmethod
@@ -74,6 +80,28 @@ class SerialWorker:
         self.ser.write(data)
 
     def _process_command_queue(self) -> None:
+        if self._command_rate_limit_seconds > 0:
+            # Pace queued requests instead of flooding the firmware's small
+            # receive buffer. The read loop continues between sends.
+            if time.monotonic() < self._next_command_at:
+                return
+            try:
+                cmd = self.command_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            try:
+                self.send_bytes(cmd)
+            except Exception as e:
+                if self.error_callback:
+                    self.error_callback(e)
+            finally:
+                self._next_command_at = (
+                    time.monotonic() + self._command_rate_limit_seconds
+                )
+            return
+
+        # A zero interval deliberately preserves the original behavior.
         while True:
             try:
                 cmd = self.command_queue.get_nowait()
