@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
@@ -7,6 +7,7 @@ from protocol_codec import LogPayload, PIDPayload, Packet, TextPayload, VarPaylo
 from protocol_definitions import MsgType
 
 from serial_worker import SerialWorker
+from config import SIMULATOR_ENDPOINT
 from ui.command_panel import CommandDock
 from ui.pid_panel import PidDock
 from ui.signal_selector_panel import SignalSelectorDock
@@ -24,8 +25,8 @@ class PlotWindow(QMainWindow):
         super().__init__()
 
         self.on_command: Callable[[Packet], None] = lambda _pkt: None
-        self.start_serial_callback: Callable[[str], None] | None = None
-        self.worker: SerialWorker | None = None
+        self.start_connection_callback: Callable[[str], None] | None = None
+        self.worker: Any | None = None
 
         self.setWindowTitle("Serial Plotter")
         self.resize(1400, 900)
@@ -39,8 +40,8 @@ class PlotWindow(QMainWindow):
         self.on_command = sender
         self._refresh_command_targets()
 
-    def set_start_serial_callback(self, callback: Callable[[str], None]):
-        self.start_serial_callback = callback
+    def set_start_connection_callback(self, callback: Callable[[str], None]):
+        self.start_connection_callback = callback
         if hasattr(self, "connect_dock"):
             self.connect_dock.on_connect = callback
 
@@ -101,11 +102,13 @@ class PlotWindow(QMainWindow):
         if self.worker is not None:
             return
 
-        if self.start_serial_callback is not None:
+        if self.start_connection_callback is not None:
             self.plot_panel.clear_data()
-            self.start_serial_callback(port)
+            self.start_connection_callback(port)
         if hasattr(self, "connect_dock"):
-            self.connect_dock.set_connected(True)
+            self.connect_dock.set_connected(
+                True, simulator=(port == SIMULATOR_ENDPOINT)
+            )
 
     def _on_disconnect_clicked(self):
         if self.worker is not None:
@@ -115,10 +118,13 @@ class PlotWindow(QMainWindow):
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(False)
 
-    def set_worker(self, worker: SerialWorker | None):
+    def set_worker(self, worker: Any | None):
         self.worker = worker
         if hasattr(self, "connect_dock"):
-            self.connect_dock.set_connected(worker is not None)
+            self.connect_dock.set_connected(
+                worker is not None,
+                simulator=bool(getattr(worker, "is_simulator", False)),
+            )
 
     def enqueue_log(self, payload: LogPayload):
         self.plot_panel.enqueue_log(payload)

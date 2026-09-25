@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QComboBox, QPus
 from PySide6.QtCore import Qt
 
 from serial_worker import SerialWorker
+from config import ENABLE_SIMULATOR, SIMULATOR_ENDPOINT
 
 
 class SerialConnectDock(QDockWidget):
@@ -37,7 +38,7 @@ class SerialConnectDock(QDockWidget):
         self.disconnect_btn.setEnabled(False)
 
         layout.addWidget(self.status_label)
-        layout.addWidget(QLabel("Serial Port"))
+        layout.addWidget(QLabel("Port or simulator"))
         layout.addWidget(self.port_combo)
         layout.addWidget(self.refresh_btn)
         layout.addWidget(self.connect_btn)
@@ -54,12 +55,18 @@ class SerialConnectDock(QDockWidget):
         self.port_combo.clear()
         ports = SerialWorker.list_available_ports()
         self.port_combo.addItems(ports)
+        if ENABLE_SIMULATOR:
+            self.port_combo.addItem("Simulator (Test Mode)", SIMULATOR_ENDPOINT)
 
-    def set_connected(self, connected: bool):
+    def set_connected(self, connected: bool, simulator: bool = False):
         self.connected = connected
         if connected:
-            self.status_label.setText("Status: Connected")
-            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            if simulator:
+                self.status_label.setText("Status: Connected (Simulator)")
+                self.status_label.setStyleSheet("color: #b36b00; font-weight: bold;")
+            else:
+                self.status_label.setText("Status: Connected")
+                self.status_label.setStyleSheet("color: green; font-weight: bold;")
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
             self.port_combo.setEnabled(False)
@@ -73,9 +80,11 @@ class SerialConnectDock(QDockWidget):
             self.refresh_btn.setEnabled(True)
 
     def _connect(self):
-        port = self.port_combo.currentText().strip()
-        if port and self.on_connect is not None:
-            self.on_connect(port)
+        endpoint = self.port_combo.currentData()
+        if endpoint is None:
+            endpoint = self.port_combo.currentText().strip()
+        if endpoint and self.on_connect is not None:
+            self.on_connect(str(endpoint))
 
     def _disconnect(self):
         if self.on_disconnect is not None:

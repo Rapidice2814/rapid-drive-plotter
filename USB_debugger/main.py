@@ -2,6 +2,15 @@ import logging
 import sys
 import queue
 import threading
+from pathlib import Path
+
+# Support both direct execution (python USB_debugger/main.py) and package imports.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEBUGGER_DIR = Path(__file__).resolve().parent
+for _import_path in (str(_PROJECT_ROOT), str(_DEBUGGER_DIR)):
+    if _import_path not in sys.path:
+        sys.path.insert(0, _import_path)
+del _import_path
 
 from PySide6.QtWidgets import QApplication
 
@@ -10,7 +19,15 @@ from serial_worker import SerialWorker, SerialConfig
 from hdf5_logger import HDF5LogLogger, get_log_filename
 from plot_window import PlotWindow
 
-from config import SERIAL_BAUDRATE, SERIAL_TIMEOUT
+from config import (
+    SERIAL_BAUDRATE,
+    SERIAL_TIMEOUT,
+    SIMULATOR_ENDPOINT,
+    SIMULATOR_SAMPLE_INTERVAL,
+    SIMULATOR_SAMPLES_PER_PACKET,
+    TIMESTAMP_HZ,
+)
+from Serial_Simulator.simulator_worker import SimulatorConfig, SimulatorWorker
 
 _LOG = logging.getLogger(__name__)
 
@@ -42,7 +59,7 @@ def main():
             if decoded is not None:
                 plot.enqueue_reply(decoded)
 
-    def stop_serial(join: bool = True):
+    def stop_worker(join: bool = True):
         worker = plot.worker
         if worker is None:
             return
@@ -58,29 +75,42 @@ def main():
         # connection widgets on the GUI thread.
         plot.serial_disconnected.emit()
 
-    def start_serial(port: str):
-        stop_serial(join=True)
+    def start_connection(endpoint: str):
+        stop_worker(join=True)
 
-        worker = SerialWorker(
-            config=SerialConfig(port=port, baudrate=SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT),
-            command_queue=command_queue,
-            data_callback=on_data,
-            error_callback=lambda error: _LOG.error("Serial error: %s", error),
-            disconnect_callback=worker_disconnect,
-        )
+        common_callbacks = {
+            "command_queue": command_queue,
+            "data_callback": on_data,
+            "error_callback": lambda error: _LOG.error("Connection error: %s", error),
+            "disconnect_callback": worker_disconnect,
+        }
+        if endpoint == SIMULATOR_ENDPOINT:
+            worker = SimulatorWorker(
+                **common_callbacks,
+                config=SimulatorConfig(
+                    sample_interval=SIMULATOR_SAMPLE_INTERVAL,
+                    samples_per_packet=SIMULATOR_SAMPLES_PER_PACKET,
+                    timestamp_hz=TIMESTAMP_HZ,
+                ),
+            )
+        else:
+            worker = SerialWorker(
+                config=SerialConfig(port=endpoint, baudrate=SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT),
+                **common_callbacks,
+            )
         plot.set_worker(worker)
         worker.start()
 
-    plot.set_start_serial_callback(start_serial)
+    plot.set_start_connection_callback(start_connection)
     if hasattr(plot, "connect_dock"):
-        plot.connect_dock.on_disconnect = lambda: stop_serial(join=True)
+        plot.connect_dock.on_disconnect = lambda: stop_worker(join=True)
 
     plot.show()
 
     try:
         return app.exec()
     finally:
-        stop_serial(join=True)
+        stop_worker(join=True)
         logger.stop()
         logger.join()
 
