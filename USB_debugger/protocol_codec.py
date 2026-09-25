@@ -58,11 +58,12 @@ class RawPacket:
     payload_bytes: bytes
 
 DecodedPayload: TypeAlias = LogPayload | PIDPayload | TextPayload | VarPayload
+PacketData: TypeAlias = DecodedPayload | bytes | None
 
 @dataclass
 class Packet:
     msg_type: MsgType
-    data: DecodedPayload | None
+    data: PacketData
 
 
 
@@ -228,15 +229,15 @@ class ProtocolCodec:
         }.get(msg_type_int)
 
         if decoder is None:
+            # Preserve known-but-not-yet-decoded messages (ACK, version/state,
+            # device errors, etc.) so callers can inspect or log their bytes.
             _LOG.debug("No payload decoder for message type %s", msg_type_int.name)
-            return Packet(msg_type=MsgType(msg_type_int), data=None)
+            return Packet(msg_type=msg_type_int, data=raw_packet.payload_bytes)
 
         decoded: DecodedPayload | None = decoder(raw_packet.payload_bytes)
-
         if decoded is None:
-            return Packet(msg_type=MsgType(msg_type_int), data=None)
-        
-        return Packet(msg_type=MsgType(msg_type_int), data=decoded)
+            return Packet(msg_type=msg_type_int, data=None)
+        return Packet(msg_type=msg_type_int, data=decoded)
 
     def encode_packet(self, packet: Packet) -> RawPacket:
         """Encode a typed packet; reject mismatched payload types explicitly."""
@@ -244,6 +245,16 @@ class ProtocolCodec:
         data = packet.data
 
         if data is None:
+            empty_payload_types = {
+                MsgType.MSG_GET_VERSION,
+                MsgType.MSG_START_LOG,
+                MsgType.MSG_STOP_LOG,
+                MsgType.MSG_FLASH_SAVE,
+                MsgType.MSG_FLASH_LOAD,
+                MsgType.MSG_GET_STATE,
+            }
+            if msg_type not in empty_payload_types:
+                raise ValueError(f"{msg_type.name} requires a payload")
             return RawPacket(msg_type_int=int(msg_type), payload_bytes=b"")
 
         if msg_type == MsgType.MSG_GET_PID and isinstance(data, PIDPayload):
@@ -265,6 +276,10 @@ class ProtocolCodec:
             payload = struct.pack("<B", data.var_id)
         elif msg_type == MsgType.MSG_SET_VAR and isinstance(data, VarPayload):
             payload = self._encode_var_payload(data)
+        elif isinstance(data, bytes):
+            # Raw payload escape hatch for message types whose wire layout is
+            # not yet modeled (e.g. version/state replies and error messages).
+            payload = data
         else:
             raise TypeError(
                 f"Unsupported data type {type(data).__name__} for {msg_type!r}"

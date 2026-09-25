@@ -1,6 +1,6 @@
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
 
 from protocol_codec import LogPayload, PIDPayload, Packet, TextPayload, VarPayload
@@ -17,6 +17,9 @@ from ui.connect_panel import SerialConnectDock
 
 
 class PlotWindow(QMainWindow):
+    reply_received = Signal(object)
+    serial_disconnected = Signal()
+
     def __init__(self):
         super().__init__()
 
@@ -28,6 +31,9 @@ class PlotWindow(QMainWindow):
         self.resize(1400, 900)
 
         self._build_ui()
+        # Qt queues these calls when emitted from the serial worker thread.
+        self.reply_received.connect(self.on_reply)
+        self.serial_disconnected.connect(self._handle_serial_disconnected)
 
     def set_command_sender(self, sender: Callable[[Packet], None]):
         self.on_command = sender
@@ -96,6 +102,7 @@ class PlotWindow(QMainWindow):
             return
 
         if self.start_serial_callback is not None:
+            self.plot_panel.clear_data()
             self.start_serial_callback(port)
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(True)
@@ -119,6 +126,17 @@ class PlotWindow(QMainWindow):
     def enqueue_text(self, payload: str):
         self.command_dock.enqueue_text(payload)
 
+    def enqueue_reply(self, packet: Packet) -> None:
+        """Deliver a decoded reply on the GUI thread, even if called by a worker."""
+        self.reply_received.emit(packet)
+
+    @Slot()
+    def _handle_serial_disconnected(self) -> None:
+        # The worker owns and closes its serial handle in its finally block.
+        self.worker = None
+        self.connect_dock.set_connected(False)
+
+    @Slot(object)
     def on_reply(self, packet: Packet):
         if packet.msg_type == MsgType.MSG_TEXT_REPLY and isinstance(packet.data, TextPayload):
             self.enqueue_text(packet.data.text)
@@ -136,7 +154,11 @@ class PlotWindow(QMainWindow):
         elif packet.msg_type == MsgType.MSG_VAR_REPLY and isinstance(packet.data, VarPayload):
             if packet.data.value is not None:
                 self.enqueue_text(str(packet.data))
-                self.var_dock.set_var_value(packet.data.var_id, float(packet.data.value))
+                self.var_dock.set_var_value(packet.data.var_id, packet.data.value)
+
+        elif isinstance(packet.data, bytes):
+            # Keep known but not yet decoded replies and device errors visible.
+            self.enqueue_text(f"{packet.msg_type.name}: {packet.data.hex(' ')}")
 
     def _handle_text_command(self, cmd: str):
         cmd = cmd.strip()

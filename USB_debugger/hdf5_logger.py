@@ -1,6 +1,7 @@
+import logging
 import queue
 import threading
-from dataclasses import dataclass
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, cast
@@ -10,24 +11,14 @@ import numpy as np
 
 from protocol_codec import LogPayload
 
+_LOG = logging.getLogger(__name__)
+
 
 def get_log_filename() -> Path:
-    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S_%f")
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"debug_log_{timestamp}.h5"
-
-
-def _dtype_from_values(values):
-    first = values[0]
-    if isinstance(first, (float, np.floating)):
-        return np.float32
-    return np.uint32
-
-
-@dataclass
-class _LogBatch:
-    payloads: list[LogPayload]
 
 
 class HDF5LogLogger:
@@ -41,7 +32,10 @@ class HDF5LogLogger:
         self.filename = Path(filename)
         self.batch_size = int(batch_size)
         self.flush_interval = float(flush_interval)
+        if self.batch_size <= 0 or self.flush_interval <= 0 or max_queue_size <= 0:
+            raise ValueError("batch_size, flush_interval, and max_queue_size must be positive")
         self.queue: queue.Queue[LogPayload] = queue.Queue(maxsize=max_queue_size)
+        self.dropped_payloads = 0
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.file: Optional[h5py.File] = None
@@ -58,66 +52,59 @@ class HDF5LogLogger:
         self.thread.join(timeout=timeout)
 
     def enqueue(self, payload: LogPayload) -> None:
+        """Queue non-empty payloads; count dropped items rather than hiding loss."""
+        if payload.sample_count <= 0:
+            return
         try:
             self.queue.put_nowait(payload)
         except queue.Full:
-            pass
+            self.dropped_payloads += 1
+            if self.dropped_payloads == 1 or self.dropped_payloads % 100 == 0:
+                _LOG.warning("HDF5 logger queue full; dropped %d payloads", self.dropped_payloads)
 
     def _open_file(self) -> None:
         if self.file is None:
-            self.file = h5py.File(self.filename, "a")
+            self.file = h5py.File(self.filename, "x")
 
     def _ensure_datasets(self, payload: LogPayload) -> None:
         if self.file is None:
             raise RuntimeError("HDF5 file is not open")
 
-        if self.initialized:
-            return
-
-        self.signal_names = list(payload.signals.keys())
-
-        self.file.require_group("log")
-
-        self.file.create_dataset(
-            "log/time",
-            shape=(0,),
-            maxshape=(None,),
-            dtype=np.uint32,
-            chunks=True,
-        )
-
-        self.file.create_dataset(
-            "log/sample_count",
-            shape=(0,),
-            maxshape=(None,),
-            dtype=np.uint32,
-            chunks=True,
-        )
-
-        self.file.create_dataset(
-            "log/signal_count",
-            shape=(0,),
-            maxshape=(None,),
-            dtype=np.uint32,
-            chunks=True,
-        )
-
-        for name in self.signal_names:
-            values = payload.signals[name]
+        if not self.initialized:
+            self.file.require_group("log")
             self.file.create_dataset(
-                f"log/{name}",
-                shape=(0,),
-                maxshape=(None,),
-                dtype=_dtype_from_values(values),
-                chunks=True,
+                "log/time", shape=(0,), maxshape=(None,), dtype=np.uint32, chunks=True
             )
+            self.file.create_dataset(
+                "log/sample_count", shape=(0,), maxshape=(None,), dtype=np.uint32, chunks=True
+            )
+            self.file.create_dataset(
+                "log/signal_count", shape=(0,), maxshape=(None,), dtype=np.uint32, chunks=True
+            )
+            self.initialized = True
+
+        time_ds = cast(h5py.Dataset, self.file["log/time"])
+        self.signal_names = list(dict.fromkeys(self.signal_names + list(payload.signals)))
+        for name in self.signal_names:
+            dataset_path = f"log/{name}"
+            if dataset_path not in self.file:
+                # float64 stores every uint32 value exactly and also permits NaN
+                # for samples when a logging mask did not include this signal.
+                signal_ds = self.file.create_dataset(
+                    dataset_path,
+                    shape=(time_ds.shape[0],),
+                    maxshape=(None,),
+                    dtype=np.float64,
+                    chunks=True,
+                    fillvalue=np.nan,
+                )
+                if time_ds.shape[0]:
+                    signal_ds[:] = np.nan
 
         self.file.attrs["signal_names"] = np.array(
             self.signal_names,
             dtype=h5py.string_dtype(encoding="utf-8"),
         )
-
-        self.initialized = True
 
     def _append_1d(self, ds: h5py.Dataset, values: np.ndarray) -> None:
         old_len = ds.shape[0]
@@ -129,61 +116,65 @@ class HDF5LogLogger:
         if not batch:
             return
 
-        self._ensure_datasets(batch[0])
-        assert self.file is not None
-
-        time_parts: list[np.ndarray] = []
-        signal_parts: dict[str, list[np.ndarray]] = {}
-
         for payload in batch:
-            base_timestamp = int(payload.timestamp)
-            sample_count = int(payload.sample_count)
-
-            time_parts.append(
-                np.arange(base_timestamp, base_timestamp + sample_count, dtype=np.uint32)
-            )
-
+            if payload.sample_count < 0:
+                raise ValueError("sample_count must be non-negative")
+            if payload.signal_count != len(payload.signals):
+                raise ValueError(
+                    f"signal_count={payload.signal_count} but "
+                    f"{len(payload.signals)} signal arrays supplied"
+                )
+            if not 0 <= payload.timestamp <= 0xFFFFFFFF:
+                raise ValueError(f"timestamp is outside uint32 range: {payload.timestamp}")
             for name, values in payload.signals.items():
-                signal_parts.setdefault(name, []).append(np.asarray(values))
+                if len(values) != payload.sample_count:
+                    raise ValueError(
+                        f"Signal {name!r} has {len(values)} values; "
+                        f"expected {payload.sample_count}"
+                    )
+            self._ensure_datasets(payload)
 
-        total_samples = sum(int(p.sample_count) for p in batch)
-        time_array = np.concatenate(time_parts) if time_parts else np.empty((0,), dtype=np.uint32)
+        assert self.file is not None
+        time_parts = []
+        for payload in batch:
+            offsets = np.arange(payload.sample_count, dtype=np.uint64)
+            time_parts.append(
+                ((int(payload.timestamp) + offsets) & 0xFFFFFFFF).astype(np.uint32)
+            )
+        time_values = np.concatenate(time_parts) if time_parts else np.empty(0, dtype=np.uint32)
+        self._append_1d(cast(h5py.Dataset, self.file["log/time"]), time_values)
 
-        time_ds = cast(h5py.Dataset, self.file["log/time"])
-        old_len = time_ds.shape[0]
-        new_len = old_len + total_samples
-        time_ds.resize((new_len,))
-        time_ds[old_len:new_len] = time_array
+        self._append_1d(
+            cast(h5py.Dataset, self.file["log/sample_count"]),
+            np.asarray([payload.sample_count for payload in batch], dtype=np.uint32),
+        )
+        self._append_1d(
+            cast(h5py.Dataset, self.file["log/signal_count"]),
+            np.asarray([payload.signal_count for payload in batch], dtype=np.uint32),
+        )
 
-        sc_ds = cast(h5py.Dataset, self.file["log/sample_count"])
-        sc_values = np.asarray([int(p.sample_count) for p in batch], dtype=np.uint32)
-        self._append_1d(sc_ds, sc_values)
-
-        sigc_ds = cast(h5py.Dataset, self.file["log/signal_count"])
-        sigc_values = np.asarray([int(p.signal_count) for p in batch], dtype=np.uint32)
-        self._append_1d(sigc_ds, sigc_values)
-
-        for name, parts in signal_parts.items():
-            ds = cast(h5py.Dataset, self.file[f"log/{name}"])
-            values_np = np.concatenate(parts).astype(ds.dtype, copy=False)
-
-            old_len = ds.shape[0]
-            new_len = old_len + len(values_np)
-            ds.resize((new_len,))
-            ds[old_len:new_len] = values_np
+        for name in self.signal_names:
+            value_parts = []
+            for payload in batch:
+                if name in payload.signals:
+                    value_parts.append(np.asarray(payload.signals[name], dtype=np.float64))
+                else:
+                    value_parts.append(np.full(payload.sample_count, np.nan, dtype=np.float64))
+            values = np.concatenate(value_parts) if value_parts else np.empty(0, dtype=np.float64)
+            self._append_1d(cast(h5py.Dataset, self.file[f"log/{name}"]), values)
 
         self.file.flush()
 
     def _run(self) -> None:
-        self._open_file()
         batch: list[LogPayload] = []
-        last_flush = datetime.now().timestamp()
+        last_flush = time.monotonic()
 
         try:
+            self._open_file()
             while not self.stop_event.is_set() or not self.queue.empty():
                 timeout = max(
                     0.0,
-                    self.flush_interval - (datetime.now().timestamp() - last_flush),
+                    self.flush_interval - (time.monotonic() - last_flush),
                 )
 
                 try:
@@ -193,7 +184,7 @@ class HDF5LogLogger:
                 except queue.Empty:
                     pass
 
-                now = datetime.now().timestamp()
+                now = time.monotonic()
                 if batch and (
                     len(batch) >= self.batch_size
                     or (now - last_flush) >= self.flush_interval
@@ -205,7 +196,8 @@ class HDF5LogLogger:
 
             if batch:
                 self._flush_batch(batch)
-
+        except Exception:
+            _LOG.exception("HDF5 logging worker failed")
         finally:
             if self.file is not None:
                 self.file.flush()

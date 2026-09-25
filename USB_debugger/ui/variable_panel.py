@@ -11,10 +11,24 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIntValidator
+from PySide6.QtGui import QValidator
 
 from protocol_codec import VarPayload, Packet
 from protocol_definitions import VAR_ID_LIST, MsgType
+
+
+class UInt32Validator(QValidator):
+    """Accept decimal values in the full unsigned 32-bit range."""
+
+    def validate(self, text: str, position: int):
+        if not text:
+            return QValidator.State.Intermediate, text, position
+        if not text.isdecimal():
+            return QValidator.State.Invalid, text, position
+        significant_digits = text.lstrip("0") or "0"
+        if len(significant_digits) > 10 or int(significant_digits) > 0xFFFFFFFF:
+            return QValidator.State.Invalid, text, position
+        return QValidator.State.Acceptable, text, position
 
 
 class NoWheelDoubleSpinBox(QDoubleSpinBox):
@@ -71,7 +85,7 @@ class VarDock(QDockWidget):
                 value.setSingleStep(1)
             elif var_type == "u32":
                 value = QLineEdit()
-                value.setValidator(QIntValidator(0, 2147483647, value))
+                value.setValidator(UInt32Validator(value))
             else:
                 raise ValueError(f"Unsupported var type: {var_type}")
 

@@ -1,3 +1,4 @@
+import logging
 import sys
 import queue
 import threading
@@ -11,6 +12,8 @@ from plot_window import PlotWindow
 
 from config import SERIAL_BAUDRATE, SERIAL_TIMEOUT
 
+_LOG = logging.getLogger(__name__)
+
 
 def main():
     app = QApplication(sys.argv)
@@ -23,6 +26,7 @@ def main():
         batch_size=50,
         flush_interval=0.5,
     )
+    logger.start()
 
     plot.set_command_sender(
         lambda pkt: command_queue.put(codec.build_packet(codec.encode_packet(pkt)))
@@ -36,7 +40,7 @@ def main():
                 logger.enqueue(decoded.data)
                 plot.enqueue_log(decoded.data)
             if decoded is not None:
-                plot.on_reply(decoded)
+                plot.enqueue_reply(decoded)
 
     def stop_serial(join: bool = True):
         worker = plot.worker
@@ -50,7 +54,9 @@ def main():
             worker.join()
 
     def worker_disconnect():
-        stop_serial(join=False)
+        # Signal emission is thread-safe; the connected PlotWindow slot updates
+        # connection widgets on the GUI thread.
+        plot.serial_disconnected.emit()
 
     def start_serial(port: str):
         stop_serial(join=True)
@@ -59,7 +65,7 @@ def main():
             config=SerialConfig(port=port, baudrate=SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT),
             command_queue=command_queue,
             data_callback=on_data,
-            error_callback=lambda e: print(f"Serial error: {e}"),
+            error_callback=lambda error: _LOG.error("Serial error: %s", error),
             disconnect_callback=worker_disconnect,
         )
         plot.set_worker(worker)

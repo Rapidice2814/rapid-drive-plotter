@@ -1,4 +1,3 @@
-from collections import deque
 from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QCheckBox, QScrollArea
 from PySide6.QtCore import Qt
 
@@ -18,7 +17,7 @@ class SignalSelectorDock(QDockWidget):
 
         self.signal_meta = [s for s in FOC_USB_DEBUG_SIGNAL_LIST if s["name"]]
         self.signal_checkboxes = {}
-        self.current_mask = bytearray(SIGNAL_MASK_BYTES)  # 4 bytes, all zero
+        self.current_mask = bytearray(SIGNAL_MASK_BYTES)  # All signals initially disabled
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -66,12 +65,12 @@ class SignalSelectorDock(QDockWidget):
         mask = self._build_mask()
         self.current_mask = mask
 
-        # Show as 32-bit hex for readability
+        # Display the full mask width for readability
         mask_int = int.from_bytes(mask, "little")
-        self.mask_label.setText(f"Mask: 0x{mask_int:08X}")
+        self.mask_label.setText(f"Mask: 0x{mask_int:0{SIGNAL_MASK_BYTES * 2}X}")
 
         if send:
             self.on_command(Packet(msg_type=MsgType.MSG_STOP_LOG, data=None))
-            # Send mask as bytes (4 bytes, little-endian bit layout)
+            # Send the full mask in little-endian byte order
             self.on_command(Packet(msg_type=MsgType.MSG_SET_MASK, data=bytes(mask)))
             self.on_command(Packet(msg_type=MsgType.MSG_START_LOG, data=None))
