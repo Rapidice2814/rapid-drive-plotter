@@ -21,6 +21,8 @@ from USB_debugger.protocol_definitions import (
     FOC_USB_DEBUG_SIGNAL_LIST,
     SIGNAL_MASK_BYTES,
     VAR_ID_LIST,
+    CONTROL_MODE_LABELS,
+    ControlMode,
     MsgType,
     FOCState,
 )
@@ -87,12 +89,16 @@ class SimulatorWorker:
         self._stop_event = threading.Event()
         self._logging = False
         self._state = int(FOCState.FOC_STATE_IDLE)
-        self._control_mode = "idle"
+        self._control_mode: ControlMode | None = None
         self._timestamp = 0
         self._started_at = time.monotonic()
         self._pids = dict(self._DEFAULT_PIDS)
         self._variables = dict(self._DEFAULT_VARIABLES)
         self._saved_variables = dict(self._variables)
+        self._can_node_id = 0
+        self._can_heartbeat_rate_ms = 0
+        self._active_errors = 0
+        self._latched_errors = 0
         self._command_rate_limit_seconds = max(
             0.0, float(COMMAND_RATE_LIMIT_SECONDS)
         )
@@ -187,22 +193,39 @@ class SimulatorWorker:
         try:
             msg_type = MsgType(raw_packet.msg_type_int)
         except ValueError:
-            self._reply(MsgType.MSG_UNKNOWN_TYPE, bytes((raw_packet.msg_type_int,)))
+            self._reply(MsgType.MSG_UNKNOWN_TYPE, b"")
             return
 
         payload = raw_packet.payload_bytes
         if msg_type == MsgType.MSG_GET_VERSION:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
             self._reply(MsgType.MSG_VERSION_REPLY, bytes((1, 0, 0)))
+        elif msg_type == MsgType.MSG_GET_MASK:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(MsgType.MSG_MASK_REPLY, self.codec.log_mask)
         elif msg_type == MsgType.MSG_SET_MASK:
             if len(payload) != SIGNAL_MASK_BYTES:
                 self._invalid_payload(msg_type)
                 return
+            if self._logging:
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
             self.codec.set_log_mask(payload)
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_START_LOG:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
             self._logging = True
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_STOP_LOG:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
             self._logging = False
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_PID:
@@ -212,7 +235,7 @@ class SimulatorWorker:
             controller_id = payload[0]
             gains = self._pids.get(controller_id)
             if gains is None:
-                self._reply(MsgType.MSG_UNKNOWN_ID, bytes((controller_id,)))
+                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
             else:
                 self._reply(MsgType.MSG_PID_REPLY, struct.pack("<Bfff", controller_id, *gains))
         elif msg_type == MsgType.MSG_SET_PID:
@@ -221,7 +244,7 @@ class SimulatorWorker:
                 return
             controller_id, kp, ki, kd = struct.unpack("<Bfff", payload)
             if controller_id not in self._pids:
-                self._reply(MsgType.MSG_UNKNOWN_ID, bytes((controller_id,)))
+                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
             else:
                 self._pids[controller_id] = (kp, ki, kd)
                 self._ack(msg_type)
@@ -237,7 +260,7 @@ class SimulatorWorker:
             var_id, raw_value = struct.unpack("<BI", payload)
             meta = self._var_meta(var_id)
             if meta is None:
-                self._reply(MsgType.MSG_UNKNOWN_ID, bytes((var_id,)))
+                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
                 return
             self._variables[var_id] = ProtocolCodec.cast_u32_value(raw_value, meta["type"])
             self._ack(msg_type)
@@ -259,25 +282,141 @@ class SimulatorWorker:
                 state = FOCState(payload[0])
                 if state == FOCState.FOC_STATE_COUNT:
                     raise ValueError("FOC_STATE_COUNT is not a runtime state")
+                previous_state = self._state
                 self._state = int(state)
+                if (
+                    previous_state == int(FOCState.FOC_STATE_RUN)
+                    and self._state != int(FOCState.FOC_STATE_RUN)
+                ):
+                    for var_id in (0, 1, 2, 3):
+                        self._variables[var_id] = 0.0
+                    self._control_mode = None
+                elif (
+                    self._state == int(FOCState.FOC_STATE_RUN)
+                    and self._control_mode is None
+                ):
+                    self._control_mode = ControlMode.CONTROL_MODE_OPENLOOP
             except ValueError:
-                self._reply(MsgType.MSG_UNKNOWN_ID, bytes((payload[0],)))
+                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
                 return
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_STATE:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
             self._reply(MsgType.MSG_STATE_REPLY, bytes((self._state,)))
+        elif msg_type == MsgType.MSG_SET_CONTROL_MODE:
+            if len(payload) != 1:
+                self._invalid_payload(msg_type)
+                return
+            if self._state != int(FOCState.FOC_STATE_RUN):
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
+            try:
+                self._control_mode = ControlMode(payload[0])
+            except ValueError:
+                self._invalid_payload(msg_type)
+                return
+            # The firmware resets the setpoints when changing control modes.
+            for var_id in (0, 1, 2, 3):
+                self._variables[var_id] = 0.0
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_CONTROL_MODE:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            if self._state != int(FOCState.FOC_STATE_RUN):
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
+            if self._control_mode is None:
+                self._control_mode = ControlMode.CONTROL_MODE_OPENLOOP
+            self._reply(
+                MsgType.MSG_CONTROL_MODE_REPLY,
+                bytes((int(self._control_mode),)),
+            )
+        elif msg_type == MsgType.MSG_SET_NODE_ID:
+            if len(payload) != 1 or payload[0] > 15:
+                self._invalid_payload(msg_type)
+                return
+            self._can_node_id = payload[0]
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_NODE_ID:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(MsgType.MSG_NODE_ID_REPLY, bytes((self._can_node_id,)))
+        elif msg_type == MsgType.MSG_GET_ACTIVE_ERRORS:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(
+                MsgType.MSG_ACTIVE_ERRORS_REPLY,
+                struct.pack("<I", self._active_errors),
+            )
+        elif msg_type == MsgType.MSG_GET_LATCHED_ERRORS:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(
+                MsgType.MSG_LATCHED_ERRORS_REPLY,
+                struct.pack("<I", self._latched_errors),
+            )
+        elif msg_type == MsgType.MSG_CLEAR_LATCHED_ERRORS:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._latched_errors = 0
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_SET_CAN_HEARTBEAT:
+            if len(payload) != 2:
+                self._invalid_payload(msg_type)
+                return
+            self._can_heartbeat_rate_ms = struct.unpack("<H", payload)[0]
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_CAN_HEARTBEAT:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(
+                MsgType.MSG_CAN_HEARTBEAT_REPLY,
+                struct.pack("<H", self._can_heartbeat_rate_ms),
+            )
         elif msg_type == MsgType.MSG_FLASH_SAVE:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            if self._state != int(FOCState.FOC_STATE_IDLE):
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
             self._saved_variables = dict(self._variables)
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_FLASH_LOAD:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            if self._state != int(FOCState.FOC_STATE_IDLE):
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
             self._variables = dict(self._saved_variables)
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_FLASH_CLEAR:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            if self._state != int(FOCState.FOC_STATE_IDLE):
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
             # Clearing flash restores its contents to factory defaults. Keep
             # the current live values unchanged until a FLASH_LOAD is requested.
             self._saved_variables = dict(self._DEFAULT_VARIABLES)
             self._ack(msg_type)
-        elif msg_type == MsgType.MSG_ENDER_BOOTLOADER:
+        elif msg_type == MsgType.MSG_ENTER_BOOTLOADER:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            if self._state != int(FOCState.FOC_STATE_IDLE):
+                self._reply(MsgType.MSG_ERROR, b"")
+                return
             self._logging = False
             self._state = int(FOCState.FOC_STATE_BOOTLOADER)
             self._ack(msg_type)
@@ -295,16 +434,25 @@ class SimulatorWorker:
             return "Simulator firmware 1.0.0"
         if lowered in ("state", "status"):
             state_name = FOCState(self._state).name.removeprefix("FOC_STATE_")
-            return f"Simulator state: {state_name}; control mode: {self._control_mode}"
+            mode_name = (
+                "none"
+                if self._control_mode is None
+                else CONTROL_MODE_LABELS[self._control_mode]
+            )
+            return f"Simulator state: {state_name}; control mode: {mode_name}"
 
-        modes = {"mo": "open loop", "ms": "speed", "mp": "position"}
+        modes = {
+            "mo": ControlMode.CONTROL_MODE_OPENLOOP,
+            "mp": ControlMode.CONTROL_MODE_POSITION,
+            "ms": ControlMode.CONTROL_MODE_SPEED,
+        }
         if lowered in modes:
             self._control_mode = modes[lowered]
             self._state = int(FOCState.FOC_STATE_RUN)
             # Match the firmware behavior when switching control modes.
             for var_id in (0, 1, 2, 3):
                 self._variables[var_id] = 0.0
-            return f"Simulator control mode: {self._control_mode}"
+            return f"Simulator control mode: {CONTROL_MODE_LABELS[self._control_mode]}"
 
         setpoint = re.fullmatch(r"(?i)(Sq|Sd|Ss|Sp)([-+]?(?:\d+(?:\.\d*)?|\.\d+))", command)
         if setpoint:
@@ -322,16 +470,16 @@ class SimulatorWorker:
     def _reply_var(self, var_id: int) -> None:
         meta = self._var_meta(var_id)
         if meta is None:
-            self._reply(MsgType.MSG_UNKNOWN_ID, bytes((var_id,)))
+            self._reply(MsgType.MSG_UNKNOWN_ID, b"")
             return
         raw_value = ProtocolCodec.cast_to_u32_value(self._variables[var_id], meta["type"])
         self._reply(MsgType.MSG_VAR_REPLY, struct.pack("<BI", var_id, raw_value))
 
     def _ack(self, command_type: MsgType) -> None:
-        self._reply(MsgType.MSG_ACK, bytes((int(command_type),)))
+        self._reply(MsgType.MSG_ACK, b"")
 
     def _invalid_payload(self, command_type: MsgType) -> None:
-        self._reply(MsgType.MSG_INVALID_PAYLOAD, bytes((int(command_type),)))
+        self._reply(MsgType.MSG_INVALID_PAYLOAD, b"")
 
     def _reply(self, msg_type: MsgType, payload: bytes) -> None:
         self._emit_bytes(self.codec.build_packet(RawPacket(int(msg_type), payload)))

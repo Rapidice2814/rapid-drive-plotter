@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from protocol_codec import Packet, TextPayload, VarPayload
-from protocol_definitions import FOCState, MsgType
+from protocol_codec import ControlModePayload, Packet, VarPayload
+from protocol_definitions import ControlMode, FOCState, MsgType
 
 
 SETPOINT_SECTIONS = (
@@ -21,7 +21,7 @@ SETPOINT_SECTIONS = (
         "key": "open_loop",
         "title": "Open loop",
         "button": "Open loop control",
-        "command": "Mo",
+        "mode": ControlMode.CONTROL_MODE_OPENLOOP,
         "fields": (
             (0, "D-axis current", " A", 0.1),
             (1, "Q-axis current", " A", 0.1),
@@ -31,14 +31,14 @@ SETPOINT_SECTIONS = (
         "key": "position",
         "title": "Position control",
         "button": "Position control",
-        "command": "Mp",
+        "mode": ControlMode.CONTROL_MODE_POSITION,
         "fields": ((2, "Angle", " rad", 0.1),),
     },
     {
         "key": "speed",
         "title": "Speed control",
         "button": "Speed control",
-        "command": "Ms",
+        "mode": ControlMode.CONTROL_MODE_SPEED,
         "fields": ((3, "Speed", " rad/s", 1.0),),
     },
 )
@@ -142,10 +142,15 @@ class SetpointDock(QDockWidget):
         self._update_controls_enabled()
 
     def _update_controls_enabled(self):
+        in_run_state = self._driver_state == FOCState.FOC_STATE_RUN
         for button in self.mode_buttons.values():
-            button.setEnabled(self._connected)
+            button.setEnabled(self._connected and in_run_state)
         for var_id, value in self.value_widgets.items():
-            active = self._connected and self._active_mode == self.var_modes[var_id]
+            active = (
+                self._connected
+                and in_run_state
+                and self._active_mode == self.var_modes[var_id]
+            )
             value.setEnabled(active)
             self.set_buttons[var_id].setEnabled(active)
 
@@ -201,19 +206,24 @@ class SetpointDock(QDockWidget):
         else:
             state_name = current_state.name.removeprefix("FOC_STATE_").replace("_", " ")
             self.driver_state_label.setText(state_name)
+        self._update_controls_enabled()
 
     def _activate_mode(self, mode: str):
-        if not self._connected:
+        if (
+            not self._connected
+            or self._driver_state != FOCState.FOC_STATE_RUN
+        ):
             return
         section = next(item for item in SETPOINT_SECTIONS if item["key"] == mode)
         self._active_mode = mode
         self._update_controls_enabled()
         self.on_command(
             Packet(
-                msg_type=MsgType.MSG_TEXT_COMMAND,
-                data=TextPayload(text=section["command"]),
+                msg_type=MsgType.MSG_SET_CONTROL_MODE,
+                data=ControlModePayload(mode=section["mode"]),
             )
         )
+        self.on_command(Packet(msg_type=MsgType.MSG_GET_CONTROL_MODE, data=None))
         # The driver's mode transition may reset its setpoint values. Read the
         # active target(s) after queuing the mode command instead of assuming 0.
         for var_id, _label, _suffix, _step in section["fields"]:
@@ -223,6 +233,39 @@ class SetpointDock(QDockWidget):
                     data=VarPayload(var_id=var_id, value=None),
                 )
             )
+
+    def set_control_mode(self, mode_value: int | ControlMode):
+        if not self._connected or self._driver_state != FOCState.FOC_STATE_RUN:
+            return
+        try:
+            mode = ControlMode(int(mode_value))
+        except (TypeError, ValueError):
+            self._clear_active_mode()
+            return
+
+        section = next(
+            (item for item in SETPOINT_SECTIONS if item["mode"] == mode), None
+        )
+        if section is None:
+            self._clear_active_mode()
+            return
+
+        mode_changed = self._active_mode != section["key"]
+        self._active_mode = section["key"]
+        for key, button in self.mode_buttons.items():
+            button.setChecked(key == self._active_mode)
+        self._update_controls_enabled()
+
+        # A mode change may reset the driver's target. Read the newly active
+        # setpoint(s) so the editor reflects the actual values, not stale ones.
+        if mode_changed:
+            for var_id, _label, _suffix, _step in section["fields"]:
+                self.on_command(
+                    Packet(
+                        msg_type=MsgType.MSG_GET_VAR,
+                        data=VarPayload(var_id=var_id, value=None),
+                    )
+                )
 
     def request_values(self):
         if not self._connected:
@@ -237,7 +280,11 @@ class SetpointDock(QDockWidget):
                 )
 
     def _send_setpoint(self, var_id: int):
-        if not self._connected or self._active_mode != self.var_modes.get(var_id):
+        if (
+            not self._connected
+            or self._driver_state != FOCState.FOC_STATE_RUN
+            or self._active_mode != self.var_modes.get(var_id)
+        ):
             return
         self.on_command(
             Packet(

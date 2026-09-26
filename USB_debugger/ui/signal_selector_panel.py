@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QCheckBox, QScrollArea
+from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QCheckBox, QScrollArea, QPushButton
 from PySide6.QtCore import Qt
 
 from protocol_codec import Packet
@@ -18,6 +18,7 @@ class SignalSelectorDock(QDockWidget):
         self.signal_meta = [s for s in FOC_USB_DEBUG_SIGNAL_LIST if s["name"]]
         self.signal_checkboxes = {}
         self.current_mask = bytearray(SIGNAL_MASK_BYTES)  # All signals initially disabled
+        self._updating_mask = False
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -25,6 +26,9 @@ class SignalSelectorDock(QDockWidget):
         self.mask_label = QLabel("Mask: 0x00000000")
         self.mask_label.setWordWrap(True)
         layout.addWidget(self.mask_label)
+        self.read_mask_button = QPushButton("Read mask from driver")
+        self.read_mask_button.clicked.connect(self.request_mask)
+        layout.addWidget(self.read_mask_button)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -48,7 +52,23 @@ class SignalSelectorDock(QDockWidget):
         self.setWidget(panel)
 
     def _on_signal_toggled(self):
-        self.update_mask(send=True)
+        if not self._updating_mask:
+            self.update_mask(send=True)
+
+    def request_mask(self):
+        self.on_command(Packet(msg_type=MsgType.MSG_GET_MASK, data=None))
+
+    def set_mask(self, mask: bytes | bytearray):
+        if len(mask) != SIGNAL_MASK_BYTES:
+            return
+        self._updating_mask = True
+        try:
+            for bit, checkbox in self.signal_checkboxes.items():
+                byte_index, bit_index = divmod(bit, 8)
+                checkbox.setChecked(bool(mask[byte_index] & (1 << bit_index)))
+        finally:
+            self._updating_mask = False
+        self.update_mask(send=False)
 
     def _build_mask(self) -> bytearray:
         mask = bytearray(SIGNAL_MASK_BYTES)

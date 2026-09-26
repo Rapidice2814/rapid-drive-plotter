@@ -12,12 +12,18 @@ VERSION_REPLY_TIMEOUT_SECONDS = 2.0
 # Current-state refresh cadence while a driver is connected.
 STATE_POLL_INTERVAL_SECONDS = 1.0
 
+# Refresh active and latched driver error flags while connected.
+ERROR_POLL_INTERVAL_SECONDS = 1.0
+
+# Refresh the selected control mode while the driver is in RUN.
+CONTROL_MODE_POLL_INTERVAL_SECONDS = 1.0
+
 # Refresh the available serial ports only while disconnected.
 PORT_REFRESH_INTERVAL_SECONDS = 5.0
 
 # Minimum spacing between commands sent to the driver. This limits bursts
 # (for example, when reading all PID/variable values); set to 0 to disable.
-COMMAND_RATE_LIMIT_SECONDS = 0.01
+COMMAND_RATE_LIMIT_SECONDS = 0.05
 
 # Timestamp frequency of individual telemetry samples.
 SAMPLE_RATE = 8000.0

@@ -13,6 +13,7 @@ from protocol_definitions import (
     SOF1_BIN,
     SOF2_BIN,
     VAR_ID_LIST,
+    ControlMode,
     MsgType,
 )
 
@@ -63,11 +64,35 @@ class StatePayload:
     state: int
 
 @dataclass
+class MaskPayload:
+    mask: bytes
+
+@dataclass
+class NodeIdPayload:
+    node_id: int
+
+@dataclass
+class CanHeartbeatPayload:
+    rate_ms: int
+
+@dataclass
+class ErrorFlagsPayload:
+    value: int
+
+@dataclass
+class ControlModePayload:
+    mode: ControlMode
+
+@dataclass
 class RawPacket:
     msg_type_int: int
     payload_bytes: bytes
 
-DecodedPayload: TypeAlias = LogPayload | PIDPayload | TextPayload | VarPayload | VersionPayload | StatePayload
+DecodedPayload: TypeAlias = (
+    LogPayload | PIDPayload | TextPayload | VarPayload | VersionPayload
+    | StatePayload | MaskPayload | NodeIdPayload | CanHeartbeatPayload
+    | ErrorFlagsPayload | ControlModePayload
+)
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
 @dataclass
@@ -238,6 +263,12 @@ class ProtocolCodec:
             MsgType.MSG_VAR_REPLY: self._decode_var_payload,
             MsgType.MSG_VERSION_REPLY: self._decode_version_payload,
             MsgType.MSG_STATE_REPLY: self._decode_state_payload,
+            MsgType.MSG_MASK_REPLY: self._decode_mask_payload,
+            MsgType.MSG_NODE_ID_REPLY: self._decode_node_id_payload,
+            MsgType.MSG_ACTIVE_ERRORS_REPLY: self._decode_error_flags_payload,
+            MsgType.MSG_LATCHED_ERRORS_REPLY: self._decode_error_flags_payload,
+            MsgType.MSG_CAN_HEARTBEAT_REPLY: self._decode_can_heartbeat_payload,
+            MsgType.MSG_CONTROL_MODE_REPLY: self._decode_control_mode_payload,
         }.get(msg_type_int)
 
         if decoder is None:
@@ -249,6 +280,8 @@ class ProtocolCodec:
         decoded: DecodedPayload | None = decoder(raw_packet.payload_bytes)
         if decoded is None:
             return Packet(msg_type=msg_type_int, data=None)
+        if isinstance(decoded, MaskPayload):
+            self.set_log_mask(decoded.mask)
         return Packet(msg_type=msg_type_int, data=decoded)
 
     def encode_packet(self, packet: Packet) -> RawPacket:
@@ -259,13 +292,20 @@ class ProtocolCodec:
         if data is None:
             empty_payload_types = {
                 MsgType.MSG_GET_VERSION,
+                MsgType.MSG_ENTER_BOOTLOADER,
+                MsgType.MSG_GET_MASK,
                 MsgType.MSG_START_LOG,
                 MsgType.MSG_STOP_LOG,
                 MsgType.MSG_FLASH_SAVE,
                 MsgType.MSG_FLASH_LOAD,
-                MsgType.MSG_ENDER_BOOTLOADER,
                 MsgType.MSG_FLASH_CLEAR,
                 MsgType.MSG_GET_STATE,
+                MsgType.MSG_GET_NODE_ID,
+                MsgType.MSG_GET_ACTIVE_ERRORS,
+                MsgType.MSG_GET_LATCHED_ERRORS,
+                MsgType.MSG_CLEAR_LATCHED_ERRORS,
+                MsgType.MSG_GET_CAN_HEARTBEAT,
+                MsgType.MSG_GET_CONTROL_MODE,
             }
             if msg_type not in empty_payload_types:
                 raise ValueError(f"{msg_type.name} requires a payload")
@@ -282,10 +322,28 @@ class ProtocolCodec:
             )
         elif msg_type == MsgType.MSG_TEXT_COMMAND and isinstance(data, TextPayload):
             payload = self._encode_text_payload(data)
+        elif msg_type == MsgType.MSG_SET_CONTROL_MODE and isinstance(data, ControlModePayload):
+            try:
+                mode = ControlMode(int(data.mode))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid control mode: {data.mode!r}") from exc
+            payload = struct.pack("<B", int(mode))
+        elif msg_type == MsgType.MSG_SET_STATE and isinstance(data, StatePayload):
+            if not 0 <= int(data.state) <= 0xFF:
+                raise ValueError("FOC state must fit in one byte")
+            payload = struct.pack("<B", int(data.state))
         elif msg_type == MsgType.MSG_SET_MASK and isinstance(data, (bytes, bytearray)):
             self._validate_mask(data)
             payload = bytes(data)
             self.set_log_mask(payload)
+        elif msg_type == MsgType.MSG_SET_NODE_ID and isinstance(data, NodeIdPayload):
+            if not 0 <= int(data.node_id) <= 15:
+                raise ValueError("CAN node ID must be between 0 and 15")
+            payload = struct.pack("<B", int(data.node_id))
+        elif msg_type == MsgType.MSG_SET_CAN_HEARTBEAT and isinstance(data, CanHeartbeatPayload):
+            if not 0 <= int(data.rate_ms) <= 0xFFFF:
+                raise ValueError("CAN heartbeat rate must fit in an unsigned 16-bit value")
+            payload = struct.pack("<H", int(data.rate_ms))
         elif msg_type == MsgType.MSG_GET_VAR and isinstance(data, VarPayload):
             payload = struct.pack("<B", data.var_id)
         elif msg_type == MsgType.MSG_SET_VAR and isinstance(data, VarPayload):
@@ -314,6 +372,55 @@ class ProtocolCodec:
             _LOG.warning("Invalid STATE_REPLY payload length: %d, expected 1", len(payload))
             return None
         return StatePayload(state=payload[0])
+
+    def _decode_mask_payload(self, payload: bytes) -> MaskPayload | None:
+        if len(payload) != SIGNAL_MASK_BYTES:
+            _LOG.warning(
+                "Invalid MASK_REPLY payload length: %d, expected %d",
+                len(payload),
+                SIGNAL_MASK_BYTES,
+            )
+            return None
+        return MaskPayload(mask=bytes(payload))
+
+    @staticmethod
+    def _decode_node_id_payload(payload: bytes) -> NodeIdPayload | None:
+        if len(payload) != 1:
+            _LOG.warning("Invalid NODE_ID_REPLY payload length: %d, expected 1", len(payload))
+            return None
+        return NodeIdPayload(node_id=payload[0])
+
+    @staticmethod
+    def _decode_error_flags_payload(payload: bytes) -> ErrorFlagsPayload | None:
+        if len(payload) != 4:
+            _LOG.warning("Invalid error-flags payload length: %d, expected 4", len(payload))
+            return None
+        return ErrorFlagsPayload(value=struct.unpack("<I", payload)[0])
+
+    @staticmethod
+    def _decode_control_mode_payload(payload: bytes) -> ControlModePayload | None:
+        if len(payload) != 1:
+            _LOG.warning(
+                "Invalid CONTROL_MODE_REPLY payload length: %d, expected 1",
+                len(payload),
+            )
+            return None
+        try:
+            mode = ControlMode(payload[0])
+        except ValueError:
+            _LOG.warning("Unknown control mode in reply: %d", payload[0])
+            return None
+        return ControlModePayload(mode=mode)
+
+    @staticmethod
+    def _decode_can_heartbeat_payload(payload: bytes) -> CanHeartbeatPayload | None:
+        if len(payload) != 2:
+            _LOG.warning(
+                "Invalid CAN_HEARTBEAT_REPLY payload length: %d, expected 2",
+                len(payload),
+            )
+            return None
+        return CanHeartbeatPayload(rate_ms=struct.unpack("<H", payload)[0])
 
     def _decode_log_payload(self, payload: bytes, log_mask: bytes | bytearray | None = None) -> LogPayload | None:
         if len(payload) < _LOG_HEADER.size:

@@ -12,12 +12,14 @@ from PySide6.QtWidgets import (
 )
 
 from config import (
+    CONTROL_MODE_POLL_INTERVAL_SECONDS,
+    ERROR_POLL_INTERVAL_SECONDS,
     STATE_POLL_INTERVAL_SECONDS,
     VERSION_POLL_INTERVAL_SECONDS,
     VERSION_REPLY_TIMEOUT_SECONDS,
 )
-from protocol_codec import Packet
-from protocol_definitions import FOCState, MsgType
+from protocol_codec import ControlModePayload, Packet, StatePayload, VarPayload
+from protocol_definitions import CONTROL_MODE_LABELS, FOC_ERROR_LABELS, ControlMode, FOCState, MsgType
 
 
 class BasicsDock(QDockWidget):
@@ -27,6 +29,8 @@ class BasicsDock(QDockWidget):
         super().__init__("Basics", parent)
         self.on_command = on_command
         self._connected = False
+        self._current_state: FOCState | None = None
+        self._current_control_mode: ControlMode | None = None
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -68,7 +72,53 @@ class BasicsDock(QDockWidget):
         state_inline_layout.addStretch()
         state_inline_layout.addWidget(self.state_button)
         state_form.addRow("Current state", state_inline)
+        self.control_mode_label = QLabel("Not available outside RUN")
+        self.control_mode_label.setStyleSheet("color: #1976d2; font-weight: bold;")
+        self.control_mode_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        state_form.addRow("Current mode", self.control_mode_label)
         layout.addWidget(state_group)
+
+        errors_group = QGroupBox("Driver errors")
+        errors_form = QFormLayout(errors_group)
+        self.active_errors_label = QLabel("Not read")
+        self.active_errors_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.active_errors_label.setWordWrap(True)
+        self._style_error_label(self.active_errors_label, None)
+        active_row = QWidget()
+        active_row_layout = QHBoxLayout(active_row)
+        active_row_layout.setContentsMargins(0, 0, 0, 0)
+        active_row_layout.addWidget(self.active_errors_label, 1)
+        self.read_active_errors_button = QPushButton("Read")
+        self.read_active_errors_button.clicked.connect(self.request_active_errors)
+        active_row_layout.addWidget(self.read_active_errors_button)
+        errors_form.addRow("Active", active_row)
+
+        self.latched_errors_label = QLabel("Not read")
+        self.latched_errors_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.latched_errors_label.setWordWrap(True)
+        self._style_error_label(self.latched_errors_label, None)
+        latched_row = QWidget()
+        latched_row_layout = QHBoxLayout(latched_row)
+        latched_row_layout.setContentsMargins(0, 0, 0, 0)
+        latched_row_layout.addWidget(self.latched_errors_label, 1)
+        self.read_latched_errors_button = QPushButton("Read")
+        self.read_latched_errors_button.clicked.connect(self.request_latched_errors)
+        latched_row_layout.addWidget(self.read_latched_errors_button)
+        errors_form.addRow("Latched", latched_row)
+
+        self.clear_latched_errors_button = QPushButton("Clear latched errors")
+        self.clear_latched_errors_button.setToolTip(
+            "Clear latched driver errors in any state."
+        )
+        self.clear_latched_errors_button.clicked.connect(self.clear_latched_errors)
+        errors_form.addRow(self.clear_latched_errors_button)
+        layout.addWidget(errors_group)
 
         version_group = QGroupBox("Firmware")
         version_form = QFormLayout(version_group)
@@ -116,21 +166,36 @@ class BasicsDock(QDockWidget):
         state_select_layout.addLayout(selected_state_row)
         layout.addWidget(state_select_group)
 
+        control_mode_group = QGroupBox("Go to a specific control mode")
+        mode_select_layout = QHBoxLayout(control_mode_group)
+        self.control_mode_combo = QComboBox()
+        for mode, label in CONTROL_MODE_LABELS.items():
+            self.control_mode_combo.addItem(label, int(mode))
+        mode_select_layout.addWidget(self.control_mode_combo, 1)
+        self.set_control_mode_button = QPushButton("Go to selected mode")
+        self.set_control_mode_button.clicked.connect(self.set_selected_control_mode)
+        mode_select_layout.addWidget(self.set_control_mode_button)
+        layout.addWidget(control_mode_group)
+
         flash_group = QGroupBox("Flash storage")
         flash_layout = QVBoxLayout(flash_group)
         self.flash_save_button = QPushButton("Save settings to flash")
-        self.flash_save_button.setToolTip("Send the FLASH_SAVE command to the driver.")
+        self.flash_save_button.setToolTip(
+            "Send FLASH_SAVE. Available only while the driver is IDLE."
+        )
         self.flash_save_button.clicked.connect(
             lambda: self._send(MsgType.MSG_FLASH_SAVE)
         )
         self.flash_load_button = QPushButton("Load settings from flash")
-        self.flash_load_button.setToolTip("Send the FLASH_LOAD command to the driver.")
+        self.flash_load_button.setToolTip(
+            "Send FLASH_LOAD. Available only while the driver is IDLE."
+        )
         self.flash_load_button.clicked.connect(
             lambda: self._send(MsgType.MSG_FLASH_LOAD)
         )
         self.flash_clear_button = QPushButton("Clear settings from flash")
         self.flash_clear_button.setToolTip(
-            "Send the MSG_FLASH_CLEAR command to clear saved settings."
+            "Send FLASH_CLEAR. Available only while the driver is IDLE."
         )
         self.flash_clear_button.clicked.connect(
             lambda: self._send(MsgType.MSG_FLASH_CLEAR)
@@ -144,10 +209,10 @@ class BasicsDock(QDockWidget):
         bootloader_layout = QVBoxLayout(bootloader_group)
         self.enter_bootloader_button = QPushButton("Enter bootloader")
         self.enter_bootloader_button.setToolTip(
-            "Send the MSG_ENDER_BOOTLOADER command to the driver."
+            "Available only while the driver is IDLE."
         )
         self.enter_bootloader_button.clicked.connect(
-            lambda: self._send(MsgType.MSG_ENDER_BOOTLOADER)
+            lambda: self._send(MsgType.MSG_ENTER_BOOTLOADER)
         )
         bootloader_layout.addWidget(self.enter_bootloader_button)
         layout.addWidget(bootloader_group)
@@ -165,6 +230,22 @@ class BasicsDock(QDockWidget):
             max(1, round(STATE_POLL_INTERVAL_SECONDS * 1000))
         )
         self.state_poll_timer.timeout.connect(self.request_state)
+
+        self.error_poll_timer = QTimer(self)
+        self._error_poll_interval_ms = max(
+            0, round(ERROR_POLL_INTERVAL_SECONDS * 1000)
+        )
+        self.error_poll_timer.setInterval(max(1, self._error_poll_interval_ms))
+        self.error_poll_timer.timeout.connect(self.request_errors)
+
+        self.control_mode_poll_timer = QTimer(self)
+        self._control_mode_poll_interval_ms = max(
+            0, round(CONTROL_MODE_POLL_INTERVAL_SECONDS * 1000)
+        )
+        self.control_mode_poll_timer.setInterval(
+            max(1, self._control_mode_poll_interval_ms)
+        )
+        self.control_mode_poll_timer.timeout.connect(self.request_control_mode)
 
         self.version_reply_timeout_timer = QTimer(self)
         self.version_reply_timeout_timer.setSingleShot(True)
@@ -188,12 +269,19 @@ class BasicsDock(QDockWidget):
     def begin_connection(self):
         self.version_poll_timer.stop()
         self.state_poll_timer.stop()
+        self.error_poll_timer.stop()
+        self.control_mode_poll_timer.stop()
         self.version_reply_timeout_timer.stop()
         self._connected = False
+        self._current_state = None
+        self._current_control_mode = None
+        self.control_mode_label.setText("Waiting for driver state…")
         self.driver_status_label.setToolTip("")
         self._set_driver_status("ERROR", "error")
         self.version_label.setText("Waiting for reply…")
         self.state_label.setText("Waiting for driver…")
+        self._show_error_value(self.active_errors_label, "Waiting for reply")
+        self._show_error_value(self.latched_errors_label, "Waiting for reply")
         self._set_command_buttons_enabled(False)
 
     def transport_ready(self):
@@ -203,31 +291,153 @@ class BasicsDock(QDockWidget):
         self.request_state()
         self.version_poll_timer.start()
         self.state_poll_timer.start()
+        self.request_errors()
+        if self._error_poll_interval_ms > 0:
+            self.error_poll_timer.start()
 
     def set_disconnected(self):
         self.version_poll_timer.stop()
         self.state_poll_timer.stop()
+        self.error_poll_timer.stop()
+        self.control_mode_poll_timer.stop()
         self.version_reply_timeout_timer.stop()
         self._connected = False
+        self._current_state = None
+        self._current_control_mode = None
         self.driver_status_label.setToolTip("")
         self._set_driver_status("ERROR", "error")
         self.state_label.setText("Disconnected")
+        self.control_mode_label.setText("Disconnected")
+        self._show_error_value(self.active_errors_label, "Disconnected")
+        self._show_error_value(self.latched_errors_label, "Disconnected")
         self._set_command_buttons_enabled(False)
 
     def _set_command_buttons_enabled(self, enabled: bool):
         for button in (
             self.version_button,
             self.state_button,
-            self.flash_save_button,
-            self.flash_load_button,
-            self.flash_clear_button,
-            self.enter_bootloader_button,
             self.stop_state_button,
             self.run_state_button,
             self.state_combo,
             self.go_to_state_button,
+            self.read_active_errors_button,
+            self.read_latched_errors_button,
         ):
             button.setEnabled(enabled)
+
+        can_flash = enabled and self._current_state == FOCState.FOC_STATE_IDLE
+        for button in (
+            self.flash_save_button,
+            self.flash_load_button,
+            self.flash_clear_button,
+        ):
+            button.setEnabled(can_flash)
+        self.enter_bootloader_button.setEnabled(can_flash)
+        self.clear_latched_errors_button.setEnabled(enabled)
+        can_select_mode = enabled and self._current_state == FOCState.FOC_STATE_RUN
+        self.control_mode_combo.setEnabled(can_select_mode)
+        self.set_control_mode_button.setEnabled(can_select_mode)
+
+    def request_errors(self):
+        if self._connected:
+            self.request_active_errors()
+            self.request_latched_errors()
+
+    def request_active_errors(self):
+        self._send(MsgType.MSG_GET_ACTIVE_ERRORS)
+
+    def request_latched_errors(self):
+        self._send(MsgType.MSG_GET_LATCHED_ERRORS)
+
+    def clear_latched_errors(self):
+        if not self._connected:
+            return
+        self._send(MsgType.MSG_CLEAR_LATCHED_ERRORS)
+        self._show_error_value(self.latched_errors_label, "Clear requested")
+        self.request_latched_errors()
+
+    @staticmethod
+    def _style_error_label(label: QLabel, value: int | None):
+        if value is None:
+            color = "#666666"
+        else:
+            color = "#16803c" if value == 0 else "#c62828"
+        label.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+    def _show_error_value(self, label: QLabel, text: str):
+        label.setText(text)
+        self._style_error_label(label, None)
+
+    def set_active_errors(self, value: int):
+        self.active_errors_label.setText(self._format_error_flags(value))
+        self._style_error_label(self.active_errors_label, value)
+
+    def set_latched_errors(self, value: int):
+        self.latched_errors_label.setText(self._format_error_flags(value))
+        self._style_error_label(self.latched_errors_label, value)
+
+    @staticmethod
+    def _format_error_flags(value: int) -> str:
+        value &= 0xFFFFFFFF
+        known_mask = 0
+        active_reasons = []
+        for error, label in FOC_ERROR_LABELS.items():
+            bit = int(error)
+            known_mask |= bit
+            if value & bit:
+                active_reasons.append(label)
+
+        unknown_bits = value & ~known_mask
+        if unknown_bits:
+            active_reasons.append(f"Unknown flags 0x{unknown_bits:08X}")
+
+        reasons = ", ".join(active_reasons) if active_reasons else "none"
+        return f"0x{value:08X} ({reasons})"
+
+    def request_control_mode(self):
+        if self._connected and self._current_state == FOCState.FOC_STATE_RUN:
+            self._send(MsgType.MSG_GET_CONTROL_MODE)
+
+    def set_selected_control_mode(self):
+        if not self._connected or self._current_state != FOCState.FOC_STATE_RUN:
+            return
+        try:
+            mode = ControlMode(int(self.control_mode_combo.currentData()))
+        except (TypeError, ValueError):
+            return
+        self.on_command(
+            Packet(
+                msg_type=MsgType.MSG_SET_CONTROL_MODE,
+                data=ControlModePayload(mode=mode),
+            )
+        )
+        self.request_control_mode()
+        # Switching modes can reset the mode's setpoint. Refresh the matching
+        # target fields so the Setpoints tab immediately reflects the driver.
+        mode_variable_ids = {
+            ControlMode.CONTROL_MODE_OPENLOOP: (0, 1),
+            ControlMode.CONTROL_MODE_POSITION: (2,),
+            ControlMode.CONTROL_MODE_SPEED: (3,),
+        }
+        for var_id in mode_variable_ids[mode]:
+            self.on_command(
+                Packet(
+                    msg_type=MsgType.MSG_GET_VAR,
+                    data=VarPayload(var_id=var_id, value=None),
+                )
+            )
+
+    def set_control_mode(self, mode_value: int | ControlMode):
+        if not self._connected or self._current_state != FOCState.FOC_STATE_RUN:
+            return
+        try:
+            mode = ControlMode(int(mode_value))
+        except (TypeError, ValueError):
+            self._current_control_mode = None
+            self.control_mode_label.setText("Unknown control mode")
+            return
+        self._current_control_mode = mode
+        self.control_mode_label.setText(CONTROL_MODE_LABELS[mode])
 
     def request_version(self):
         if not self._connected or self.version_reply_timeout_timer.isActive():
@@ -248,7 +458,7 @@ class BasicsDock(QDockWidget):
     def _send_state(self, state: FOCState):
         if self._connected:
             self.on_command(
-                Packet(msg_type=MsgType.MSG_SET_STATE, data=bytes((int(state),)))
+                Packet(msg_type=MsgType.MSG_SET_STATE, data=StatePayload(state=int(state)))
             )
 
     def _send_selected_state(self):
@@ -266,11 +476,32 @@ class BasicsDock(QDockWidget):
     def set_state(self, state_value: int):
         if not self._connected:
             return
+        was_running = self._current_state == FOCState.FOC_STATE_RUN
         try:
             state = FOCState(state_value)
             if state == FOCState.FOC_STATE_COUNT:
                 raise ValueError("FOC_STATE_COUNT is not a runtime state")
+            self._current_state = state
             state_name = state.name.removeprefix("FOC_STATE_").replace("_", " ")
             self.state_label.setText(state_name)
         except ValueError:
+            self._current_state = None
             self.state_label.setText("Unknown state")
+
+        is_running = self._current_state == FOCState.FOC_STATE_RUN
+        if is_running:
+            if not was_running:
+                self._current_control_mode = None
+                self.control_mode_label.setText("Reading control mode…")
+                self.request_control_mode()
+            if (
+                self._control_mode_poll_interval_ms > 0
+                and not self.control_mode_poll_timer.isActive()
+            ):
+                self.control_mode_poll_timer.start()
+        else:
+            self.control_mode_poll_timer.stop()
+            self._current_control_mode = None
+            self.control_mode_label.setText("Not available outside RUN")
+
+        self._set_command_buttons_enabled(self._connected)

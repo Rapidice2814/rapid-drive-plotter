@@ -1,4 +1,4 @@
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
@@ -105,32 +105,104 @@ class FOCState(IntEnum):
     FOC_STATE_COUNT = 20
 
 
-class MsgType(IntEnum):
-    MSG_GET_VERSION     = 0x00  # PC -> FOC
-    MSG_VERSION_REPLY   = 0x01  # FOC -> PC
-    MSG_LOG_DATA        = 0x02  # FOC -> PC
-    MSG_SET_MASK        = 0x03  # PC -> FOC
-    MSG_START_LOG       = 0x04  # PC -> FOC
-    MSG_STOP_LOG        = 0x05  # PC -> FOC
-    MSG_SET_PID         = 0x06  # PC -> FOC
-    MSG_GET_PID         = 0x07  # PC -> FOC
-    MSG_PID_REPLY       = 0x08  # FOC -> PC
-    MSG_SET_VAR         = 0x09  # PC -> FOC
-    MSG_GET_VAR         = 0x0A  # PC -> FOC
-    MSG_VAR_REPLY       = 0x0B  # FOC -> PC
-    MSG_FLASH_SAVE      = 0x0C  # PC -> FOC
-    MSG_FLASH_LOAD      = 0x0D  # PC -> FOC
-    MSG_SET_STATE       = 0x0E  # PC -> FOC
-    MSG_GET_STATE       = 0x0F  # PC -> FOC
-    MSG_STATE_REPLY     = 0x10  # FOC -> PC
-    MSG_TEXT_COMMAND    = 0x11  # PC -> FOC
-    MSG_TEXT_REPLY      = 0x12  # FOC -> PC
-    MSG_ENDER_BOOTLOADER = 0x13  # PC -> FOC
-    MSG_FLASH_CLEAR      = 0x14  # PC -> FOC
+class ControlMode(IntEnum):
+    """Control modes accepted by MSG_SET_CONTROL_MODE."""
 
-    MSG_UNKNOWN_TYPE    = 0xFA  # FOC -> PC
+    CONTROL_MODE_OPENLOOP = 0
+    CONTROL_MODE_POSITION = 1
+    CONTROL_MODE_SPEED = 2
+
+
+CONTROL_MODE_LABELS = {
+    ControlMode.CONTROL_MODE_OPENLOOP: "Open loop",
+    ControlMode.CONTROL_MODE_POSITION: "Position",
+    ControlMode.CONTROL_MODE_SPEED: "Speed",
+}
+
+
+class FOCError(IntFlag):
+    """Driver error bits shared with the firmware error flags."""
+
+    FOC_ERROR_INITIALIZING = 1 << 0
+    FOC_ERROR_SYSTEM_FAULT = 1 << 1
+    FOC_ERROR_TIMING_VIOLATION = 1 << 2
+    FOC_ERROR_INVALID_CONFIGURATION = 1 << 3
+    FOC_ERROR_DRIVER_FAULT = 1 << 4
+    FOC_ERROR_MOTOR_OT = 1 << 5
+    FOC_ERROR_MOTOR_UT = 1 << 6
+    FOC_ERROR_MOTOR_DISCONNECTED = 1 << 7
+    FOC_ERROR_MOTOR_STALL = 1 << 8
+    FOC_ERROR_MOSFET_OT = 1 << 9
+    FOC_ERROR_MOSFET_UT = 1 << 10
+    FOC_ERROR_VBUS_OV = 1 << 11
+    FOC_ERROR_VBUS_UV = 1 << 12
+    FOC_ERROR_IBUS_OC = 1 << 13
+    FOC_ERROR_ENCODER_FAULT = 1 << 14
+
+
+# Keep user-facing descriptions alongside the bit definitions so the UI and
+# protocol mapping stay in sync when firmware names or bit locations change.
+FOC_ERROR_LABELS = {
+    FOCError.FOC_ERROR_INITIALIZING: "Initializing",
+    FOCError.FOC_ERROR_SYSTEM_FAULT: "System fault",
+    FOCError.FOC_ERROR_TIMING_VIOLATION: "Timing violation",
+    FOCError.FOC_ERROR_INVALID_CONFIGURATION: "Invalid configuration",
+    FOCError.FOC_ERROR_DRIVER_FAULT: "Driver fault",
+    FOCError.FOC_ERROR_MOTOR_OT: "Motor over-temperature",
+    FOCError.FOC_ERROR_MOTOR_UT: "Motor under-temperature",
+    FOCError.FOC_ERROR_MOTOR_DISCONNECTED: "Motor disconnected",
+    FOCError.FOC_ERROR_MOTOR_STALL: "Motor stall",
+    FOCError.FOC_ERROR_MOSFET_OT: "MOSFET over-temperature",
+    FOCError.FOC_ERROR_MOSFET_UT: "MOSFET under-temperature",
+    FOCError.FOC_ERROR_VBUS_OV: "VBUS over-voltage",
+    FOCError.FOC_ERROR_VBUS_UV: "VBUS under-voltage",
+    FOCError.FOC_ERROR_IBUS_OC: "IBUS over-current",
+    FOCError.FOC_ERROR_ENCODER_FAULT: "Encoder fault",
+}
+
+
+class MsgType(IntEnum):
+    MSG_GET_VERSION = 0x00  # PC -> FOC
+    MSG_VERSION_REPLY = 0x01  # FOC -> PC
+    MSG_ENTER_BOOTLOADER = 0x02  # PC -> FOC
+    MSG_LOG_DATA = 0x03  # FOC -> PC
+    MSG_SET_MASK = 0x04  # PC -> FOC
+    MSG_GET_MASK = 0x05  # PC -> FOC
+    MSG_MASK_REPLY = 0x06  # FOC -> PC
+    MSG_START_LOG = 0x07  # PC -> FOC
+    MSG_STOP_LOG = 0x08  # PC -> FOC
+    MSG_SET_PID = 0x09  # PC -> FOC
+    MSG_GET_PID = 0x0A  # PC -> FOC
+    MSG_PID_REPLY = 0x0B  # FOC -> PC
+    MSG_SET_VAR = 0x0C  # PC -> FOC
+    MSG_GET_VAR = 0x0D  # PC -> FOC
+    MSG_VAR_REPLY = 0x0E  # FOC -> PC
+    MSG_FLASH_SAVE = 0x0F  # PC -> FOC
+    MSG_FLASH_LOAD = 0x10  # PC -> FOC
+    MSG_FLASH_CLEAR = 0x11  # PC -> FOC
+    MSG_SET_STATE = 0x12  # PC -> FOC
+    MSG_GET_STATE = 0x13  # PC -> FOC
+    MSG_STATE_REPLY = 0x14  # FOC -> PC
+    MSG_TEXT_COMMAND = 0x15  # PC -> FOC
+    MSG_TEXT_REPLY = 0x16  # FOC -> PC
+    MSG_SET_NODE_ID = 0x17  # PC -> FOC
+    MSG_GET_NODE_ID = 0x18  # PC -> FOC
+    MSG_NODE_ID_REPLY = 0x19  # FOC -> PC
+    MSG_GET_ACTIVE_ERRORS = 0x1A  # PC -> FOC
+    MSG_ACTIVE_ERRORS_REPLY = 0x1B  # FOC -> PC
+    MSG_GET_LATCHED_ERRORS = 0x1C  # PC -> FOC
+    MSG_LATCHED_ERRORS_REPLY = 0x1D  # FOC -> PC
+    MSG_CLEAR_LATCHED_ERRORS = 0x1E  # PC -> FOC
+    MSG_SET_CAN_HEARTBEAT = 0x1F  # PC -> FOC
+    MSG_GET_CAN_HEARTBEAT = 0x20  # PC -> FOC
+    MSG_CAN_HEARTBEAT_REPLY = 0x21  # FOC -> PC
+    MSG_SET_CONTROL_MODE = 0x22  # PC -> FOC
+    MSG_GET_CONTROL_MODE = 0x23  # PC -> FOC
+    MSG_CONTROL_MODE_REPLY = 0x24  # FOC -> PC
+
+    MSG_UNKNOWN_TYPE = 0xFA  # FOC -> PC
     MSG_INVALID_PAYLOAD = 0xFB  # FOC -> PC
-    MSG_UNKNOWN_ID      = 0xFC  # FOC -> PC
+    MSG_UNKNOWN_ID = 0xFC  # FOC -> PC
     MSG_BUFFER_OVERFLOW = 0xFD  # FOC -> PC
-    MSG_ACK             = 0xFE  # FOC -> PC
-    MSG_ERROR           = 0xFF  # FOC -> PC
+    MSG_ACK = 0xFE  # FOC -> PC
+    MSG_ERROR = 0xFF  # FOC -> PC

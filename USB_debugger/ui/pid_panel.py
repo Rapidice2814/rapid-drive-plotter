@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QGroupBox, QFor
 from PySide6.QtCore import Qt
 
 from protocol_codec import PIDPayload, Packet
-from protocol_definitions import FOC_PID_CONTROLLERS_LIST, MsgType
+from protocol_definitions import FOC_PID_CONTROLLERS_LIST, FOCState, MsgType
 
 class NoWheelDoubleSpinBox(QDoubleSpinBox):
     def wheelEvent(self, event):
@@ -12,6 +12,8 @@ class PidDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("PID Controllers", parent)
         self.on_command = on_command
+        self._connected = False
+        self._driver_state: FOCState | None = None
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -46,6 +48,7 @@ class PidDock(QDockWidget):
                 w.setDecimals(6)
                 w.setRange(-1e9, 1e9)
                 w.setSingleStep(0.1)
+                w.setToolTip("PID gains can be edited only while the driver is in RUN.")
 
             form.addRow("Kp", kp)
             form.addRow("Ki", ki)
@@ -56,8 +59,54 @@ class PidDock(QDockWidget):
 
         layout.addStretch()
         self.setWidget(panel)
+        self._update_controls_enabled()
+
+    def begin_connection(self):
+        self._connected = False
+        self._driver_state = None
+        self._update_controls_enabled()
+
+    def transport_ready(self):
+        self._connected = True
+        self._update_controls_enabled()
+
+    def set_disconnected(self):
+        self._connected = False
+        self._driver_state = None
+        self._update_controls_enabled()
+
+    def set_driver_state(self, state_value: int | FOCState | None):
+        was_running = self._driver_state == FOCState.FOC_STATE_RUN
+        try:
+            state = None if state_value is None else FOCState(int(state_value))
+            if state == FOCState.FOC_STATE_COUNT:
+                state = None
+        except ValueError:
+            state = None
+        self._driver_state = state if self._connected else None
+        self._update_controls_enabled()
+        if (
+            self._connected
+            and not was_running
+            and self._driver_state == FOCState.FOC_STATE_RUN
+            and self.isVisible()
+        ):
+            self._request_all_pid_values()
+
+    def _in_run_state(self) -> bool:
+        return self._connected and self._driver_state == FOCState.FOC_STATE_RUN
+
+    def _update_controls_enabled(self):
+        enabled = self._in_run_state()
+        self.pid_refresh_btn.setEnabled(enabled)
+        self.pid_send_btn.setEnabled(enabled)
+        for widgets in self.pid_widgets.values():
+            for field in widgets.values():
+                field.setEnabled(enabled)
 
     def _request_all_pid_values(self):
+        if not self._in_run_state():
+            return
         for ctrl in FOC_PID_CONTROLLERS_LIST:
             ctrl_id = int(ctrl["id"])
             self.on_command(Packet(
@@ -66,6 +115,8 @@ class PidDock(QDockWidget):
             ))
 
     def _send_all_pid_updates(self):
+        if not self._in_run_state():
+            return
         for ctrl in FOC_PID_CONTROLLERS_LIST:
             ctrl_id = int(ctrl["id"])
             widgets = self.pid_widgets.get(ctrl_id)

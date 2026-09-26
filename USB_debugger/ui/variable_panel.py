@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QValidator
 
 from protocol_codec import VarPayload, Packet
-from protocol_definitions import VAR_ID_LIST, MsgType
+from protocol_definitions import FOCState, VAR_ID_LIST, MsgType
 
 
 class UInt32Validator(QValidator):
@@ -45,6 +45,8 @@ class VarDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("Variables", parent)
         self.on_command = on_command
+        self._connected = False
+        self._driver_state: FOCState | None = None
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -112,6 +114,41 @@ class VarDock(QDockWidget):
         layout.addWidget(scroll)
 
         self.setWidget(panel)
+        self._update_setpoint_controls_enabled()
+
+    def begin_connection(self):
+        self._connected = False
+        self._driver_state = None
+        self._update_setpoint_controls_enabled()
+
+    def transport_ready(self):
+        self._connected = True
+        self._update_setpoint_controls_enabled()
+
+    def set_disconnected(self):
+        self._connected = False
+        self._driver_state = None
+        self._update_setpoint_controls_enabled()
+
+    def set_driver_state(self, state_value: int | FOCState | None):
+        try:
+            state = None if state_value is None else FOCState(int(state_value))
+            if state == FOCState.FOC_STATE_COUNT:
+                state = None
+        except ValueError:
+            state = None
+        self._driver_state = state if self._connected else None
+        self._update_setpoint_controls_enabled()
+
+    def _update_setpoint_controls_enabled(self):
+        setpoints_enabled = (
+            self._connected and self._driver_state == FOCState.FOC_STATE_RUN
+        )
+        for var_id in (0, 1, 2, 3):
+            widgets = self.var_widgets.get(var_id)
+            if widgets is not None:
+                widgets["value"].setEnabled(setpoints_enabled)
+                widgets["send_btn"].setEnabled(setpoints_enabled)
 
     def _request_all_var_values(self):
         for var in VAR_ID_LIST:
@@ -124,6 +161,10 @@ class VarDock(QDockWidget):
             )
 
     def _send_var_update(self, var_id: int):
+        if var_id in (0, 1, 2, 3) and not (
+            self._connected and self._driver_state == FOCState.FOC_STATE_RUN
+        ):
+            return
         widgets = self.var_widgets.get(var_id)
         if widgets is None:
             return

@@ -4,7 +4,12 @@ from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
 
 from protocol_codec import (
+    CanHeartbeatPayload,
+    ControlModePayload,
+    ErrorFlagsPayload,
     LogPayload,
+    MaskPayload,
+    NodeIdPayload,
     PIDPayload,
     Packet,
     StatePayload,
@@ -25,6 +30,7 @@ from ui.variable_panel import VarDock
 from ui.connect_panel import SerialConnectDock
 from ui.basics_panel import BasicsDock
 from ui.setpoint_panel import SetpointDock
+from ui.can_panel import CanInterfaceDock
 
 
 class PlotWindow(QMainWindow):
@@ -79,6 +85,8 @@ class PlotWindow(QMainWindow):
             self.basics_dock.on_command = self.on_command
         if hasattr(self, "setpoint_dock"):
             self.setpoint_dock.on_command = self.on_command
+        if hasattr(self, "can_dock"):
+            self.can_dock.on_command = self.on_command
 
     def _build_ui(self):
         self.plot_panel = PlotPanel(self)
@@ -130,14 +138,20 @@ class PlotWindow(QMainWindow):
         self.setpoint_dock = SetpointDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.setpoint_dock)
 
+        self.can_dock = CanInterfaceDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.can_dock)
+
         # Anchor the tab group on Basics so it appears first and is selected
         # when the application opens.
         self.tabifyDockWidget(self.basics_dock, self.setpoint_dock)
         self.tabifyDockWidget(self.basics_dock, self.control_dock)
         self.tabifyDockWidget(self.basics_dock, self.pid_dock)
         self.tabifyDockWidget(self.basics_dock, self.var_dock)
+        self.tabifyDockWidget(self.basics_dock, self.can_dock)
+        self.basics_dock.visibilityChanged.connect(self._on_basics_visibility_changed)
         self.pid_dock.visibilityChanged.connect(self._on_pid_visibility_changed)
         self.var_dock.visibilityChanged.connect(self._on_variables_visibility_changed)
+        self.can_dock.visibilityChanged.connect(self._on_can_visibility_changed)
         self.basics_dock.raise_()
 
     def _on_connect_clicked(self, port: str):
@@ -150,7 +164,10 @@ class PlotWindow(QMainWindow):
             self.plot_panel.set_transport_connected(False)
             self.plot_panel.set_logging_active(False)
             self.basics_dock.begin_connection()
+            self.pid_dock.begin_connection()
+            self.var_dock.begin_connection()
             self.setpoint_dock.begin_connection()
+            self.can_dock.begin_connection()
             self.start_connection_callback(port)
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(
@@ -168,7 +185,10 @@ class PlotWindow(QMainWindow):
         self.plot_panel.set_transport_connected(False)
         self.plot_panel.set_logging_active(False)
         self.basics_dock.set_disconnected()
+        self.pid_dock.set_disconnected()
+        self.var_dock.set_disconnected()
         self.setpoint_dock.set_disconnected()
+        self.can_dock.set_disconnected()
 
     def set_worker(self, worker: Any | None):
         self.worker = worker
@@ -182,7 +202,10 @@ class PlotWindow(QMainWindow):
             self.plot_panel.set_transport_connected(False)
             self.plot_panel.set_logging_active(False)
             self.basics_dock.set_disconnected()
+            self.pid_dock.set_disconnected()
+            self.var_dock.set_disconnected()
             self.setpoint_dock.set_disconnected()
+            self.can_dock.set_disconnected()
 
     def enqueue_log(self, payload: LogPayload):
         self.plot_panel.enqueue_log(payload)
@@ -206,7 +229,10 @@ class PlotWindow(QMainWindow):
         self.plot_panel.set_transport_connected(False)
         self.plot_panel.set_logging_active(False)
         self.basics_dock.set_disconnected()
+        self.pid_dock.set_disconnected()
+        self.var_dock.set_disconnected()
         self.setpoint_dock.set_disconnected()
+        self.can_dock.set_disconnected()
 
     @Slot()
     def _handle_transport_ready(self) -> None:
@@ -215,8 +241,16 @@ class PlotWindow(QMainWindow):
         # Connection initialization starts telemetry logging after the port is ready.
         self.plot_panel.set_logging_active(True)
         self.basics_dock.transport_ready()
+        self.pid_dock.transport_ready()
+        self.var_dock.transport_ready()
         self.setpoint_dock.transport_ready()
+        self.can_dock.transport_ready()
         self._refresh_visible_data_tabs()
+
+    @Slot(bool)
+    def _on_basics_visibility_changed(self, visible: bool) -> None:
+        if visible and self._transport_ready:
+            self.basics_dock.request_errors()
 
     @Slot(bool)
     def _on_pid_visibility_changed(self, visible: bool) -> None:
@@ -228,6 +262,11 @@ class PlotWindow(QMainWindow):
         if visible and self._transport_ready:
             self.var_dock._request_all_var_values()
 
+    @Slot(bool)
+    def _on_can_visibility_changed(self, visible: bool) -> None:
+        if visible and self._transport_ready:
+            self.can_dock.request_all()
+
     def _refresh_visible_data_tabs(self) -> None:
         # A tab may already be selected while a connection is opening; read it
         # once the transport becomes ready even if no visibility signal follows.
@@ -235,6 +274,8 @@ class PlotWindow(QMainWindow):
             self.pid_dock._request_all_pid_values()
         if self.var_dock.isVisible():
             self.var_dock._request_all_var_values()
+        if self.can_dock.isVisible():
+            self.can_dock.request_all()
 
     @Slot(object)
     def on_reply(self, packet: Packet):
@@ -251,7 +292,28 @@ class PlotWindow(QMainWindow):
             and isinstance(packet.data, StatePayload)
         ):
             self.basics_dock.set_state(packet.data.state)
+            self.pid_dock.set_driver_state(packet.data.state)
+            self.var_dock.set_driver_state(packet.data.state)
             self.setpoint_dock.set_driver_state(packet.data.state)
+
+        elif packet.msg_type == MsgType.MSG_MASK_REPLY and isinstance(packet.data, MaskPayload):
+            self.signal_dock.set_mask(packet.data.mask)
+
+        elif packet.msg_type == MsgType.MSG_NODE_ID_REPLY and isinstance(packet.data, NodeIdPayload):
+            self.can_dock.set_node_id_value(packet.data.node_id)
+
+        elif packet.msg_type == MsgType.MSG_CAN_HEARTBEAT_REPLY and isinstance(packet.data, CanHeartbeatPayload):
+            self.can_dock.set_heartbeat_value(packet.data.rate_ms)
+
+        elif packet.msg_type == MsgType.MSG_CONTROL_MODE_REPLY and isinstance(packet.data, ControlModePayload):
+            self.basics_dock.set_control_mode(packet.data.mode)
+            self.setpoint_dock.set_control_mode(packet.data.mode)
+
+        elif packet.msg_type == MsgType.MSG_ACTIVE_ERRORS_REPLY and isinstance(packet.data, ErrorFlagsPayload):
+            self.basics_dock.set_active_errors(packet.data.value)
+
+        elif packet.msg_type == MsgType.MSG_LATCHED_ERRORS_REPLY and isinstance(packet.data, ErrorFlagsPayload):
+            self.basics_dock.set_latched_errors(packet.data.value)
 
         elif (
             packet.msg_type == MsgType.MSG_TEXT_REPLY
@@ -276,8 +338,11 @@ class PlotWindow(QMainWindow):
                 self.setpoint_dock.set_var_value(packet.data.var_id, packet.data.value)
 
         elif isinstance(packet.data, bytes):
-            # Keep known but not yet decoded replies and device errors visible.
-            self.enqueue_text(f"{packet.msg_type.name}: {packet.data.hex(' ')}")
+            # Keep acknowledgments and device errors visible in the terminal.
+            if packet.data:
+                self.enqueue_text(f"{packet.msg_type.name}: {packet.data.hex(' ')}")
+            else:
+                self.enqueue_text(packet.msg_type.name)
 
     def _toggle_plot_logging(self):
         if not self._transport_ready:
