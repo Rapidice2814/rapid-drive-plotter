@@ -73,7 +73,11 @@ class NodeIdPayload:
 
 @dataclass
 class CanHeartbeatPayload:
-    rate_ms: int
+    rate_cycles: int
+
+@dataclass
+class CanEncoderRatePayload:
+    rate_cycles: int
 
 @dataclass
 class ErrorFlagsPayload:
@@ -91,7 +95,7 @@ class RawPacket:
 DecodedPayload: TypeAlias = (
     LogPayload | PIDPayload | TextPayload | VarPayload | VersionPayload
     | StatePayload | MaskPayload | NodeIdPayload | CanHeartbeatPayload
-    | ErrorFlagsPayload | ControlModePayload
+    | CanEncoderRatePayload | ErrorFlagsPayload | ControlModePayload
 )
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
@@ -268,6 +272,7 @@ class ProtocolCodec:
             MsgType.MSG_ACTIVE_ERRORS_REPLY: self._decode_error_flags_payload,
             MsgType.MSG_LATCHED_ERRORS_REPLY: self._decode_error_flags_payload,
             MsgType.MSG_CAN_HEARTBEAT_REPLY: self._decode_can_heartbeat_payload,
+            MsgType.MSG_CAN_ENCODER_RATE_REPLY: self._decode_can_encoder_rate_payload,
             MsgType.MSG_CONTROL_MODE_REPLY: self._decode_control_mode_payload,
         }.get(msg_type_int)
 
@@ -305,6 +310,7 @@ class ProtocolCodec:
                 MsgType.MSG_GET_LATCHED_ERRORS,
                 MsgType.MSG_CLEAR_LATCHED_ERRORS,
                 MsgType.MSG_GET_CAN_HEARTBEAT,
+                MsgType.MSG_GET_CAN_ENCODER_RATE,
                 MsgType.MSG_GET_CONTROL_MODE,
             }
             if msg_type not in empty_payload_types:
@@ -341,9 +347,13 @@ class ProtocolCodec:
                 raise ValueError("CAN node ID must be between 0 and 15")
             payload = struct.pack("<B", int(data.node_id))
         elif msg_type == MsgType.MSG_SET_CAN_HEARTBEAT and isinstance(data, CanHeartbeatPayload):
-            if not 0 <= int(data.rate_ms) <= 0xFFFF:
+            if not 0 <= int(data.rate_cycles) <= 0xFFFF:
                 raise ValueError("CAN heartbeat rate must fit in an unsigned 16-bit value")
-            payload = struct.pack("<H", int(data.rate_ms))
+            payload = struct.pack("<H", int(data.rate_cycles))
+        elif msg_type == MsgType.MSG_SET_CAN_ENCODER_RATE and isinstance(data, CanEncoderRatePayload):
+            if not 0 <= int(data.rate_cycles) <= 0xFFFF:
+                raise ValueError("CAN encoder rate must fit in an unsigned 16-bit value")
+            payload = struct.pack("<H", int(data.rate_cycles))
         elif msg_type == MsgType.MSG_GET_VAR and isinstance(data, VarPayload):
             payload = struct.pack("<B", data.var_id)
         elif msg_type == MsgType.MSG_SET_VAR and isinstance(data, VarPayload):
@@ -420,7 +430,17 @@ class ProtocolCodec:
                 len(payload),
             )
             return None
-        return CanHeartbeatPayload(rate_ms=struct.unpack("<H", payload)[0])
+        return CanHeartbeatPayload(rate_cycles=struct.unpack("<H", payload)[0])
+
+    @staticmethod
+    def _decode_can_encoder_rate_payload(payload: bytes) -> CanEncoderRatePayload | None:
+        if len(payload) != 2:
+            _LOG.warning(
+                "Invalid CAN_ENCODER_RATE_REPLY payload length: %d, expected 2",
+                len(payload),
+            )
+            return None
+        return CanEncoderRatePayload(rate_cycles=struct.unpack("<H", payload)[0])
 
     def _decode_log_payload(self, payload: bytes, log_mask: bytes | bytearray | None = None) -> LogPayload | None:
         if len(payload) < _LOG_HEADER.size:

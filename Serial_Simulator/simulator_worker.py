@@ -96,7 +96,8 @@ class SimulatorWorker:
         self._variables = dict(self._DEFAULT_VARIABLES)
         self._saved_variables = dict(self._variables)
         self._can_node_id = 0
-        self._can_heartbeat_rate_ms = 0
+        self._can_heartbeat_rate_cycles = 0
+        self._can_encoder_rate_cycles = 0
         self._active_errors = 0
         self._latched_errors = 0
         self._command_rate_limit_seconds = max(
@@ -371,7 +372,7 @@ class SimulatorWorker:
             if len(payload) != 2:
                 self._invalid_payload(msg_type)
                 return
-            self._can_heartbeat_rate_ms = struct.unpack("<H", payload)[0]
+            self._can_heartbeat_rate_cycles = struct.unpack("<H", payload)[0]
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_CAN_HEARTBEAT:
             if payload:
@@ -379,7 +380,21 @@ class SimulatorWorker:
                 return
             self._reply(
                 MsgType.MSG_CAN_HEARTBEAT_REPLY,
-                struct.pack("<H", self._can_heartbeat_rate_ms),
+                struct.pack("<H", self._can_heartbeat_rate_cycles),
+            )
+        elif msg_type == MsgType.MSG_SET_CAN_ENCODER_RATE:
+            if len(payload) != 2:
+                self._invalid_payload(msg_type)
+                return
+            self._can_encoder_rate_cycles = struct.unpack("<H", payload)[0]
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_CAN_ENCODER_RATE:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(
+                MsgType.MSG_CAN_ENCODER_RATE_REPLY,
+                struct.pack("<H", self._can_encoder_rate_cycles),
             )
         elif msg_type == MsgType.MSG_FLASH_SAVE:
             if payload:
