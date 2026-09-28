@@ -4,8 +4,7 @@ from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
 
 from protocol_codec import (
-    CanEncoderRatePayload,
-    CanHeartbeatPayload,
+    CanCyclicRatePayload,
     ControlModePayload,
     ErrorFlagsPayload,
     LogPayload,
@@ -303,11 +302,11 @@ class PlotWindow(QMainWindow):
         elif packet.msg_type == MsgType.MSG_NODE_ID_REPLY and isinstance(packet.data, NodeIdPayload):
             self.can_dock.set_node_id_value(packet.data.node_id)
 
-        elif packet.msg_type == MsgType.MSG_CAN_HEARTBEAT_REPLY and isinstance(packet.data, CanHeartbeatPayload):
-            self.can_dock.set_heartbeat_value(packet.data.rate_cycles)
-
-        elif packet.msg_type == MsgType.MSG_CAN_ENCODER_RATE_REPLY and isinstance(packet.data, CanEncoderRatePayload):
-            self.can_dock.set_encoder_rate_value(packet.data.rate_cycles)
+        elif packet.msg_type == MsgType.MSG_CAN_CYCLIC_REPLY and isinstance(packet.data, CanCyclicRatePayload):
+            self.can_dock.set_cyclic_rate_value(
+                packet.data.cyclic_type,
+                packet.data.rate_cycles,
+            )
 
         elif packet.msg_type == MsgType.MSG_CONTROL_MODE_REPLY and isinstance(packet.data, ControlModePayload):
             self.basics_dock.set_control_mode(packet.data.mode)

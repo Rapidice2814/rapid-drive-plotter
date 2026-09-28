@@ -72,11 +72,12 @@ class NodeIdPayload:
     node_id: int
 
 @dataclass
-class CanHeartbeatPayload:
-    rate_cycles: int
+class CanCyclicTypePayload:
+    cyclic_type: int
 
 @dataclass
-class CanEncoderRatePayload:
+class CanCyclicRatePayload:
+    cyclic_type: int
     rate_cycles: int
 
 @dataclass
@@ -94,8 +95,8 @@ class RawPacket:
 
 DecodedPayload: TypeAlias = (
     LogPayload | PIDPayload | TextPayload | VarPayload | VersionPayload
-    | StatePayload | MaskPayload | NodeIdPayload | CanHeartbeatPayload
-    | CanEncoderRatePayload | ErrorFlagsPayload | ControlModePayload
+    | StatePayload | MaskPayload | NodeIdPayload | CanCyclicTypePayload
+    | CanCyclicRatePayload | ErrorFlagsPayload | ControlModePayload
 )
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
@@ -271,8 +272,7 @@ class ProtocolCodec:
             MsgType.MSG_NODE_ID_REPLY: self._decode_node_id_payload,
             MsgType.MSG_ACTIVE_ERRORS_REPLY: self._decode_error_flags_payload,
             MsgType.MSG_LATCHED_ERRORS_REPLY: self._decode_error_flags_payload,
-            MsgType.MSG_CAN_HEARTBEAT_REPLY: self._decode_can_heartbeat_payload,
-            MsgType.MSG_CAN_ENCODER_RATE_REPLY: self._decode_can_encoder_rate_payload,
+            MsgType.MSG_CAN_CYCLIC_REPLY: self._decode_can_cyclic_rate_payload,
             MsgType.MSG_CONTROL_MODE_REPLY: self._decode_control_mode_payload,
         }.get(msg_type_int)
 
@@ -309,8 +309,6 @@ class ProtocolCodec:
                 MsgType.MSG_GET_ACTIVE_ERRORS,
                 MsgType.MSG_GET_LATCHED_ERRORS,
                 MsgType.MSG_CLEAR_LATCHED_ERRORS,
-                MsgType.MSG_GET_CAN_HEARTBEAT,
-                MsgType.MSG_GET_CAN_ENCODER_RATE,
                 MsgType.MSG_GET_CONTROL_MODE,
             }
             if msg_type not in empty_payload_types:
@@ -346,14 +344,14 @@ class ProtocolCodec:
             if not 0 <= int(data.node_id) <= 15:
                 raise ValueError("CAN node ID must be between 0 and 15")
             payload = struct.pack("<B", int(data.node_id))
-        elif msg_type == MsgType.MSG_SET_CAN_HEARTBEAT and isinstance(data, CanHeartbeatPayload):
-            if not 0 <= int(data.rate_cycles) <= 0xFFFF:
-                raise ValueError("CAN heartbeat rate must fit in an unsigned 16-bit value")
-            payload = struct.pack("<H", int(data.rate_cycles))
-        elif msg_type == MsgType.MSG_SET_CAN_ENCODER_RATE and isinstance(data, CanEncoderRatePayload):
-            if not 0 <= int(data.rate_cycles) <= 0xFFFF:
-                raise ValueError("CAN encoder rate must fit in an unsigned 16-bit value")
-            payload = struct.pack("<H", int(data.rate_cycles))
+        elif msg_type == MsgType.MSG_SET_CAN_CYCLIC_RATE and isinstance(data, CanCyclicRatePayload):
+            self._validate_can_cyclic_type(data.cyclic_type)
+            if not 0 <= int(data.rate_cycles) <= 0xFFFFFFFF:
+                raise ValueError("CAN cyclic rate must fit in an unsigned 32-bit value")
+            payload = struct.pack("<BI", int(data.cyclic_type), int(data.rate_cycles))
+        elif msg_type == MsgType.MSG_GET_CAN_CYCLIC_RATE and isinstance(data, CanCyclicTypePayload):
+            self._validate_can_cyclic_type(data.cyclic_type)
+            payload = struct.pack("<B", int(data.cyclic_type))
         elif msg_type == MsgType.MSG_GET_VAR and isinstance(data, VarPayload):
             payload = struct.pack("<B", data.var_id)
         elif msg_type == MsgType.MSG_SET_VAR and isinstance(data, VarPayload):
@@ -423,24 +421,23 @@ class ProtocolCodec:
         return ControlModePayload(mode=mode)
 
     @staticmethod
-    def _decode_can_heartbeat_payload(payload: bytes) -> CanHeartbeatPayload | None:
-        if len(payload) != 2:
-            _LOG.warning(
-                "Invalid CAN_HEARTBEAT_REPLY payload length: %d, expected 2",
-                len(payload),
-            )
-            return None
-        return CanHeartbeatPayload(rate_cycles=struct.unpack("<H", payload)[0])
+    def _validate_can_cyclic_type(cyclic_type: int) -> None:
+        if not 0 <= int(cyclic_type) <= 0xFF:
+            raise ValueError("CAN cyclic type must fit in one byte")
 
     @staticmethod
-    def _decode_can_encoder_rate_payload(payload: bytes) -> CanEncoderRatePayload | None:
-        if len(payload) != 2:
+    def _decode_can_cyclic_rate_payload(payload: bytes) -> CanCyclicRatePayload | None:
+        if len(payload) != 5:
             _LOG.warning(
-                "Invalid CAN_ENCODER_RATE_REPLY payload length: %d, expected 2",
+                "Invalid CAN_CYCLIC_REPLY payload length: %d, expected 5",
                 len(payload),
             )
             return None
-        return CanEncoderRatePayload(rate_cycles=struct.unpack("<H", payload)[0])
+        cyclic_type, rate_cycles = struct.unpack("<BI", payload)
+        return CanCyclicRatePayload(
+            cyclic_type=cyclic_type,
+            rate_cycles=rate_cycles,
+        )
 
     def _decode_log_payload(self, payload: bytes, log_mask: bytes | bytearray | None = None) -> LogPayload | None:
         if len(payload) < _LOG_HEADER.size:

@@ -105,6 +105,34 @@ class FOCState(IntEnum):
     FOC_STATE_COUNT = 20
 
 
+class CanCyclicIndex(IntEnum):
+    """Cyclic CAN message identifiers shared with the driver protocol."""
+
+    CAN_CYCLIC_HEARTBEAT = 0
+    CAN_CYCLIC_ENCODER_ESTIMATES = 0x01
+    CAN_CYCLIC_BUS_VOLTAGE_CURRENT = 0x02
+    CAN_CYCLIC_TEMPERATURES = 0x03
+    CAN_CYCLIC_TORQUE = 0x04
+    CAN_CYCLIC_CURRENT = 0x05
+    CAN_CYCLIC_SPEED = 0x06
+    CAN_CYCLIC_POSITION = 0x07
+    CAN_CYCLIC_ERRORS = 0x08
+    CAN_CYCLIC_COUNT = 9
+
+
+CAN_CYCLIC_LABELS = {
+    CanCyclicIndex.CAN_CYCLIC_HEARTBEAT: "Heartbeat",
+    CanCyclicIndex.CAN_CYCLIC_ENCODER_ESTIMATES: "Encoder estimates",
+    CanCyclicIndex.CAN_CYCLIC_BUS_VOLTAGE_CURRENT: "Bus voltage / current",
+    CanCyclicIndex.CAN_CYCLIC_TEMPERATURES: "Temperatures",
+    CanCyclicIndex.CAN_CYCLIC_TORQUE: "Torque",
+    CanCyclicIndex.CAN_CYCLIC_CURRENT: "Current",
+    CanCyclicIndex.CAN_CYCLIC_SPEED: "Speed",
+    CanCyclicIndex.CAN_CYCLIC_POSITION: "Position",
+    CanCyclicIndex.CAN_CYCLIC_ERRORS: "Errors",
+}
+
+
 class ControlMode(IntEnum):
     """Control modes accepted by MSG_SET_CONTROL_MODE."""
 
@@ -193,16 +221,12 @@ class MsgType(IntEnum):
     MSG_GET_LATCHED_ERRORS = 0x1C  # PC -> FOC
     MSG_LATCHED_ERRORS_REPLY = 0x1D  # FOC -> PC
     MSG_CLEAR_LATCHED_ERRORS = 0x1E  # PC -> FOC
-    MSG_SET_CAN_HEARTBEAT = 0x1F  # PC -> FOC
-    MSG_GET_CAN_HEARTBEAT = 0x20  # PC -> FOC
-    MSG_CAN_HEARTBEAT_REPLY = 0x21  # FOC -> PC
+    MSG_SET_CAN_CYCLIC_RATE = 0x1F  # PC -> FOC
+    MSG_GET_CAN_CYCLIC_RATE = 0x20  # PC -> FOC
+    MSG_CAN_CYCLIC_REPLY = 0x21  # FOC -> PC
     MSG_SET_CONTROL_MODE = 0x22  # PC -> FOC
     MSG_GET_CONTROL_MODE = 0x23  # PC -> FOC
     MSG_CONTROL_MODE_REPLY = 0x24  # FOC -> PC
-    MSG_SET_CAN_ENCODER_RATE = 0x25  # PC -> FOC
-    MSG_GET_CAN_ENCODER_RATE = 0x26  # PC -> FOC
-    MSG_CAN_ENCODER_RATE_REPLY = 0x27  # FOC -> PC
-
     MSG_UNKNOWN_TYPE = 0xFA  # FOC -> PC
     MSG_INVALID_PAYLOAD = 0xFB  # FOC -> PC
     MSG_UNKNOWN_ID = 0xFC  # FOC -> PC

@@ -1,33 +1,31 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDockWidget,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from config import SAMPLE_RATE
-from protocol_codec import (
-    CanEncoderRatePayload,
-    CanHeartbeatPayload,
-    NodeIdPayload,
-    Packet,
-)
+from config import CAN_CYCLIC_RATE_OPTIONS, SAMPLE_RATE
+from protocol_codec import CanCyclicRatePayload, CanCyclicTypePayload, NodeIdPayload, Packet
 from protocol_definitions import MsgType
 
 
 class CanInterfaceDock(QDockWidget):
-    """Reads and edits CAN identity, heartbeat, and encoder rates."""
+    """Reads and edits CAN identity and per-message cyclic rates."""
 
     def __init__(self, on_command, parent=None):
         super().__init__("CAN Interface", parent)
         self.on_command = on_command
         self._connected = False
+        self.cyclic_rate_widgets: dict[int, dict[str, QWidget]] = {}
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -66,80 +64,67 @@ class CanInterfaceDock(QDockWidget):
         node_form.addRow("New ID", node_set)
         layout.addWidget(node_group)
 
-        heartbeat_group = QGroupBox("CAN heartbeat")
-        heartbeat_form = QFormLayout(heartbeat_group)
-        self.heartbeat_label = QLabel("Not read")
-        self.heartbeat_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        heartbeat_current = QWidget()
-        heartbeat_current_layout = QHBoxLayout(heartbeat_current)
-        heartbeat_current_layout.setContentsMargins(0, 0, 0, 0)
-        heartbeat_current_layout.addWidget(self.heartbeat_label)
-        heartbeat_current_layout.addStretch()
-        self.read_heartbeat_button = QPushButton("Read")
-        self.read_heartbeat_button.clicked.connect(self.request_heartbeat)
-        heartbeat_current_layout.addWidget(self.read_heartbeat_button)
-        heartbeat_form.addRow("Current rate", heartbeat_current)
+        rates_group = QGroupBox("CAN cyclic rates")
+        rates_form = QFormLayout(rates_group)
+        for cyclic_type, label in CAN_CYCLIC_RATE_OPTIONS:
+            cyclic_type = int(cyclic_type)
+            current_label = QLabel("Not read")
+            current_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            current_row = QWidget()
+            current_layout = QHBoxLayout(current_row)
+            current_layout.setContentsMargins(0, 0, 0, 0)
+            current_layout.addWidget(current_label)
+            current_layout.addStretch()
+            read_button = QPushButton("Read")
+            read_button.clicked.connect(
+                lambda _checked=False, kind=cyclic_type: self.request_cyclic_rate(kind)
+            )
+            current_layout.addWidget(read_button)
+            rates_form.addRow(f"{label} - current", current_row)
 
-        self.heartbeat_input = QSpinBox()
-        self.heartbeat_input.setRange(0, 65535)
-        self.heartbeat_input.setSuffix(" cycles")
-        self.heartbeat_input.setToolTip(
-            f"Rate is in cycles of the {SAMPLE_RATE:g} Hz sample clock; "
-            "0 disables CAN heartbeat messages."
-        )
-        self.set_heartbeat_button = QPushButton("Set rate")
-        self.set_heartbeat_button.clicked.connect(self.set_heartbeat)
-        heartbeat_set = QWidget()
-        heartbeat_set_layout = QHBoxLayout(heartbeat_set)
-        heartbeat_set_layout.setContentsMargins(0, 0, 0, 0)
-        heartbeat_set_layout.addWidget(self.heartbeat_input, 1)
-        heartbeat_set_layout.addWidget(self.set_heartbeat_button)
-        heartbeat_form.addRow("New rate", heartbeat_set)
-        layout.addWidget(heartbeat_group)
+            rate_input = QDoubleSpinBox()
+            rate_input.setDecimals(0)
+            rate_input.setRange(0, 0xFFFFFFFF)
+            rate_input.setSingleStep(1)
+            rate_input.setSuffix(" cycles")
+            rate_input.setKeyboardTracking(False)
+            rate_input.setToolTip(
+                f"Rate is in cycles of the {SAMPLE_RATE:g} Hz sample clock. "
+                "0 disables this cyclic message."
+            )
+            set_button = QPushButton("Set rate")
+            set_button.clicked.connect(
+                lambda _checked=False, kind=cyclic_type: self.set_cyclic_rate(kind)
+            )
+            rate_row = QWidget()
+            rate_layout = QHBoxLayout(rate_row)
+            rate_layout.setContentsMargins(0, 0, 0, 0)
+            rate_layout.addWidget(rate_input, 1)
+            rate_layout.addWidget(set_button)
+            rates_form.addRow(f"{label} - new", rate_row)
 
-        encoder_rate_group = QGroupBox("CAN encoder rate")
-        encoder_rate_form = QFormLayout(encoder_rate_group)
-        self.encoder_rate_label = QLabel("Not read")
-        self.encoder_rate_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        encoder_rate_current = QWidget()
-        encoder_rate_current_layout = QHBoxLayout(encoder_rate_current)
-        encoder_rate_current_layout.setContentsMargins(0, 0, 0, 0)
-        encoder_rate_current_layout.addWidget(self.encoder_rate_label)
-        encoder_rate_current_layout.addStretch()
-        self.read_encoder_rate_button = QPushButton("Read")
-        self.read_encoder_rate_button.clicked.connect(self.request_encoder_rate)
-        encoder_rate_current_layout.addWidget(self.read_encoder_rate_button)
-        encoder_rate_form.addRow("Current rate", encoder_rate_current)
-
-        self.encoder_rate_input = QSpinBox()
-        self.encoder_rate_input.setRange(0, 65535)
-        self.encoder_rate_input.setSuffix(" cycles")
-        self.encoder_rate_input.setToolTip(
-            f"Rate is in cycles of the {SAMPLE_RATE:g} Hz sample clock."
-        )
-        self.set_encoder_rate_button = QPushButton("Set rate")
-        self.set_encoder_rate_button.clicked.connect(self.set_encoder_rate)
-        encoder_rate_set = QWidget()
-        encoder_rate_set_layout = QHBoxLayout(encoder_rate_set)
-        encoder_rate_set_layout.setContentsMargins(0, 0, 0, 0)
-        encoder_rate_set_layout.addWidget(self.encoder_rate_input, 1)
-        encoder_rate_set_layout.addWidget(self.set_encoder_rate_button)
-        encoder_rate_form.addRow("New rate", encoder_rate_set)
-        layout.addWidget(encoder_rate_group)
-
+            self.cyclic_rate_widgets[cyclic_type] = {
+                "label": current_label,
+                "input": rate_input,
+                "read_button": read_button,
+                "set_button": set_button,
+            }
+        layout.addWidget(rates_group)
         layout.addStretch()
-        self.setWidget(panel)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(panel)
+        self.setWidget(scroll_area)
         self._update_controls_enabled()
 
     def begin_connection(self):
         self._connected = False
         self.node_id_label.setText("Waiting for reply")
-        self.heartbeat_label.setText("Waiting for reply")
-        self.encoder_rate_label.setText("Waiting for reply")
+        for widgets in self.cyclic_rate_widgets.values():
+            widgets["label"].setText("Waiting for reply")
         self._update_controls_enabled()
 
     def transport_ready(self):
@@ -149,23 +134,18 @@ class CanInterfaceDock(QDockWidget):
     def set_disconnected(self):
         self._connected = False
         self.node_id_label.setText("Disconnected")
-        self.heartbeat_label.setText("Disconnected")
-        self.encoder_rate_label.setText("Disconnected")
+        for widgets in self.cyclic_rate_widgets.values():
+            widgets["label"].setText("Disconnected")
         self._update_controls_enabled()
 
     def _update_controls_enabled(self):
-        for button in (
-            self.read_node_id_button,
-            self.set_node_id_button,
-            self.read_heartbeat_button,
-            self.set_heartbeat_button,
-            self.read_encoder_rate_button,
-            self.set_encoder_rate_button,
-        ):
-            button.setEnabled(self._connected)
+        self.read_node_id_button.setEnabled(self._connected)
+        self.set_node_id_button.setEnabled(self._connected)
         self.node_id_input.setEnabled(self._connected)
-        self.heartbeat_input.setEnabled(self._connected)
-        self.encoder_rate_input.setEnabled(self._connected)
+        for widgets in self.cyclic_rate_widgets.values():
+            widgets["read_button"].setEnabled(self._connected)
+            widgets["set_button"].setEnabled(self._connected)
+            widgets["input"].setEnabled(self._connected)
 
     def _send(self, msg_type: MsgType, data=None):
         if self._connected:
@@ -175,8 +155,8 @@ class CanInterfaceDock(QDockWidget):
         if not self._connected:
             return
         self.request_node_id()
-        self.request_heartbeat()
-        self.request_encoder_rate()
+        for cyclic_type, _label in CAN_CYCLIC_RATE_OPTIONS:
+            self.request_cyclic_rate(int(cyclic_type))
 
     def request_node_id(self):
         self._send(MsgType.MSG_GET_NODE_ID)
@@ -184,7 +164,7 @@ class CanInterfaceDock(QDockWidget):
     def set_node_id(self):
         self._send(
             MsgType.MSG_SET_NODE_ID,
-            NodeIdPayload(node_id=self.node_id_input.value()),
+            NodeIdPayload(node_id=int(self.node_id_input.value())),
         )
         self.request_node_id()
 
@@ -194,32 +174,30 @@ class CanInterfaceDock(QDockWidget):
         )
         self.node_id_input.setValue(node_id)
 
-    def request_heartbeat(self):
-        self._send(MsgType.MSG_GET_CAN_HEARTBEAT)
-
-    def set_heartbeat(self):
+    def request_cyclic_rate(self, cyclic_type: int):
         self._send(
-            MsgType.MSG_SET_CAN_HEARTBEAT,
-            CanHeartbeatPayload(rate_cycles=self.heartbeat_input.value()),
+            MsgType.MSG_GET_CAN_CYCLIC_RATE,
+            CanCyclicTypePayload(cyclic_type=cyclic_type),
         )
-        self.request_heartbeat()
 
-    def set_heartbeat_value(self, rate_cycles: int):
-        self.heartbeat_input.setValue(rate_cycles)
-        self.heartbeat_label.setText(
+    def set_cyclic_rate(self, cyclic_type: int):
+        widgets = self.cyclic_rate_widgets.get(cyclic_type)
+        if widgets is None:
+            return
+        self._send(
+            MsgType.MSG_SET_CAN_CYCLIC_RATE,
+            CanCyclicRatePayload(
+                cyclic_type=cyclic_type,
+                rate_cycles=int(widgets["input"].value()),
+            ),
+        )
+        self.request_cyclic_rate(cyclic_type)
+
+    def set_cyclic_rate_value(self, cyclic_type: int, rate_cycles: int):
+        widgets = self.cyclic_rate_widgets.get(cyclic_type)
+        if widgets is None:
+            return
+        widgets["input"].setValue(rate_cycles)
+        widgets["label"].setText(
             "Disabled (0 cycles)" if rate_cycles == 0 else f"{rate_cycles} cycles"
         )
-
-    def request_encoder_rate(self):
-        self._send(MsgType.MSG_GET_CAN_ENCODER_RATE)
-
-    def set_encoder_rate(self):
-        self._send(
-            MsgType.MSG_SET_CAN_ENCODER_RATE,
-            CanEncoderRatePayload(rate_cycles=self.encoder_rate_input.value()),
-        )
-        self.request_encoder_rate()
-
-    def set_encoder_rate_value(self, rate_cycles: int):
-        self.encoder_rate_input.setValue(rate_cycles)
-        self.encoder_rate_label.setText(f"{rate_cycles} cycles")

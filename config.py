@@ -23,7 +23,21 @@ PORT_REFRESH_INTERVAL_SECONDS = 5.0
 
 # Minimum spacing between commands sent to the driver. This limits bursts
 # (for example, when reading all PID/variable values); set to 0 to disable.
-COMMAND_RATE_LIMIT_SECONDS = 0.05
+COMMAND_RATE_LIMIT_SECONDS = 0.01
+
+# CAN cyclic message types shown in the CAN tab. Add a (type ID, label) pair
+# here when firmware adds another CAN_CyclicIndexTypeDef entry.
+CAN_CYCLIC_RATE_OPTIONS = (
+    (0x00, "Heartbeat"),
+    (0x01, "Encoder estimates"),
+    (0x02, "Bus voltage / current"),
+    (0x03, "Temperatures"),
+    (0x04, "Torque"),
+    (0x05, "Current"),
+    (0x06, "Speed"),
+    (0x07, "Position"),
+    (0x08, "Errors"),
+)
 
 # Timestamp frequency of individual telemetry samples.
 SAMPLE_RATE = 8000.0

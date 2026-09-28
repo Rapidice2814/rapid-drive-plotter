@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from config import (
+    CAN_CYCLIC_RATE_OPTIONS,
     COMMAND_RATE_LIMIT_SECONDS,
     SIMULATOR_SAMPLES_PER_PACKET,
     SAMPLE_RATE,
@@ -96,8 +97,10 @@ class SimulatorWorker:
         self._variables = dict(self._DEFAULT_VARIABLES)
         self._saved_variables = dict(self._variables)
         self._can_node_id = 0
-        self._can_heartbeat_rate_cycles = 0
-        self._can_encoder_rate_cycles = 0
+        self._can_cyclic_rates = {
+            int(cyclic_type): 0
+            for cyclic_type, _label in CAN_CYCLIC_RATE_OPTIONS
+        }
         self._active_errors = 0
         self._latched_errors = 0
         self._command_rate_limit_seconds = max(
@@ -368,33 +371,27 @@ class SimulatorWorker:
                 return
             self._latched_errors = 0
             self._ack(msg_type)
-        elif msg_type == MsgType.MSG_SET_CAN_HEARTBEAT:
-            if len(payload) != 2:
+        elif msg_type == MsgType.MSG_SET_CAN_CYCLIC_RATE:
+            if len(payload) != struct.calcsize("<BI"):
                 self._invalid_payload(msg_type)
                 return
-            self._can_heartbeat_rate_cycles = struct.unpack("<H", payload)[0]
+            cyclic_type, rate_cycles = struct.unpack("<BI", payload)
+            if cyclic_type not in self._can_cyclic_rates:
+                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                return
+            self._can_cyclic_rates[cyclic_type] = rate_cycles
             self._ack(msg_type)
-        elif msg_type == MsgType.MSG_GET_CAN_HEARTBEAT:
-            if payload:
+        elif msg_type == MsgType.MSG_GET_CAN_CYCLIC_RATE:
+            if len(payload) != 1:
                 self._invalid_payload(msg_type)
+                return
+            cyclic_type = payload[0]
+            if cyclic_type not in self._can_cyclic_rates:
+                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
                 return
             self._reply(
-                MsgType.MSG_CAN_HEARTBEAT_REPLY,
-                struct.pack("<H", self._can_heartbeat_rate_cycles),
-            )
-        elif msg_type == MsgType.MSG_SET_CAN_ENCODER_RATE:
-            if len(payload) != 2:
-                self._invalid_payload(msg_type)
-                return
-            self._can_encoder_rate_cycles = struct.unpack("<H", payload)[0]
-            self._ack(msg_type)
-        elif msg_type == MsgType.MSG_GET_CAN_ENCODER_RATE:
-            if payload:
-                self._invalid_payload(msg_type)
-                return
-            self._reply(
-                MsgType.MSG_CAN_ENCODER_RATE_REPLY,
-                struct.pack("<H", self._can_encoder_rate_cycles),
+                MsgType.MSG_CAN_CYCLIC_REPLY,
+                struct.pack("<BI", cyclic_type, self._can_cyclic_rates[cyclic_type]),
             )
         elif msg_type == MsgType.MSG_FLASH_SAVE:
             if payload:
