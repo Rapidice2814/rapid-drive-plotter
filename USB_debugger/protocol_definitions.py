@@ -85,6 +85,7 @@ VAR_ID_LIST = [
     {"id": 19, "type": "f", "name": "flash_data.hfi.PLL_gains.Kp"},
     {"id": 20, "type": "f", "name": "flash_data.hfi.PLL_gains.Ki"},
     {"id": 21, "type": "f", "name": "flash_data.hfi.polarity_current"},
+    {"id": 22, "type": "f", "name": "flash_data.hfi.bias_current"},
 ]
 
 
@@ -179,8 +180,9 @@ class HFIState(IntEnum):
     HFI_STATE_CONVERGING = 1
     HFI_STATE_POLARITY_POSITIVE = 2
     HFI_STATE_POLARITY_NEGATIVE = 3
-    HFI_STATE_LOCKED = 4
-    HFI_STATE_INVALID_CONFIG = 5
+    HFI_STATE_SETTLING = 4
+    HFI_STATE_LOCKED = 5
+    HFI_STATE_INVALID_CONFIG = 6
 
 
 class FOCError(IntFlag):

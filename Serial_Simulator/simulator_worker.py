@@ -59,7 +59,7 @@ class SimulatorWorker:
         8: 30.0, 9: 100.0, 10: 90.0, 11: 7,
         12: 0.05, 13: 0.00012, 14: 0.1, 15: 0,
         16: 0.2, 17: 2.0 * math.pi * 1000.0, 18: 1000.0,
-        19: 1000.0, 20: 25000.0, 21: 2.0,
+        19: 1000.0, 20: 25000.0, 21: 2.0, 22: 1.5,
     }
 
     def __init__(
@@ -586,6 +586,8 @@ class SimulatorWorker:
             state = HFIState.HFI_STATE_POLARITY_POSITIVE
         elif hfi_time < 0.3:
             state = HFIState.HFI_STATE_POLARITY_NEGATIVE
+        elif hfi_time < 0.35:
+            state = HFIState.HFI_STATE_SETTLING
         else:
             state = HFIState.HFI_STATE_LOCKED
 
