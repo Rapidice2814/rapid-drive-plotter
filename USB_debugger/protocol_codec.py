@@ -6,13 +6,11 @@ import logging
 import struct
 from dataclasses import dataclass
 from typing import Any, TypeAlias
+from device_definitions import DeviceInfo
 
 from protocol_definitions import (
-    FOC_USB_DEBUG_SIGNAL_LIST,
-    SIGNAL_MASK_BYTES,
     SOF1_BIN,
     SOF2_BIN,
-    VAR_ID_LIST,
     ControlMode,
     MsgType,
 )
@@ -54,12 +52,6 @@ class TextPayload:
     text: str
 
 @dataclass
-class VersionPayload:
-    major: int
-    minor: int
-    patch: int
-
-@dataclass
 class StatePayload:
     state: int
 
@@ -94,7 +86,7 @@ class RawPacket:
     payload_bytes: bytes
 
 DecodedPayload: TypeAlias = (
-    LogPayload | PIDPayload | TextPayload | VarPayload | VersionPayload
+    LogPayload | PIDPayload | TextPayload | VarPayload | DeviceInfo
     | StatePayload | MaskPayload | NodeIdPayload | CanCyclicTypePayload
     | CanCyclicRatePayload | ErrorFlagsPayload | ControlModePayload
 )
@@ -112,7 +104,7 @@ def mask_bytes_to_int(mask: bytes | bytearray) -> int:
     return int.from_bytes(mask, byteorder="little")
 
 
-def mask_int_to_bytes(mask: int, length: int = SIGNAL_MASK_BYTES) -> bytes:
+def mask_int_to_bytes(mask: int, length: int) -> bytes:
     """Convert an integer to a fixed-length little-endian mask."""
     if mask < 0:
         raise ValueError("mask must be non-negative")
@@ -132,8 +124,14 @@ class ProtocolCodec:
         sof2_bin: int = SOF2_BIN,
         signal_list: list[dict[str, Any]] | None = None,
     ) -> None:
+        self.signal_list = list(signal_list or [])
+        self.variable_list = []
+        self.pid_list = []
+        self.mask_bytes = (len(self.signal_list) + 7) // 8
+        self.max_signals = len(self.signal_list)
+        self.max_reply = 1019
         if log_mask is None:
-            log_mask = bytes(SIGNAL_MASK_BYTES)
+            log_mask = bytes(self.mask_bytes)
         self._validate_mask(log_mask)
 
         for name, value in (("sof1_bin", sof1_bin), ("sof2_bin", sof2_bin)):
@@ -143,13 +141,33 @@ class ProtocolCodec:
         self.log_mask = bytes(log_mask)
         self.sof1_bin = sof1_bin
         self.sof2_bin = sof2_bin
-        self.signal_list = (FOC_USB_DEBUG_SIGNAL_LIST if signal_list is None else signal_list)
         self.running = False
 
-    @staticmethod
-    def _validate_mask(log_mask: bytes | bytearray) -> None:
-        if len(log_mask) != SIGNAL_MASK_BYTES:
-            raise ValueError(f"log_mask must be {SIGNAL_MASK_BYTES} bytes")
+    def set_definitions(self, definitions, info) -> None:
+        definitions.validate(info)
+        self.signal_list = [dict(entry) for entry in definitions.signals]
+        self.variable_list = [dict(entry) for entry in definitions.variables]
+        self.pid_list = [dict(entry) for entry in definitions.pids]
+        self.mask_bytes = info.mask_bytes
+        self.max_signals = info.max_signals
+        self.max_reply = info.max_reply
+        self.log_mask = bytes(self.mask_bytes)
+
+    def clear_definitions(self) -> None:
+        self.signal_list = []
+        self.variable_list = []
+        self.pid_list = []
+        self.mask_bytes = 0
+        self.max_signals = 0
+        self.max_reply = 1019
+        self.log_mask = b""
+
+    def _validate_mask(self, log_mask: bytes | bytearray) -> None:
+        if len(log_mask) != self.mask_bytes:
+            raise ValueError(f"log_mask must be {self.mask_bytes} bytes")
+        value = int.from_bytes(log_mask, "little")
+        if value >> len(self.signal_list) or value.bit_count() > self.max_signals:
+            raise ValueError("Signal mask exceeds discovered capabilities")
 
     @staticmethod
     def u32_to_f32(value: int) -> float:
@@ -232,6 +250,9 @@ class ProtocolCodec:
             msg_type_int = buffer[2]
             payload_length = int.from_bytes(buffer[3:5], byteorder="little")
             packet_length = header_size + payload_length
+            if payload_length > self.max_reply:
+                del buffer[0]
+                continue
             if len(buffer) < packet_length:
                 break
 
@@ -266,7 +287,7 @@ class ProtocolCodec:
             MsgType.MSG_PID_REPLY: self._decode_pid_payload,
             MsgType.MSG_TEXT_REPLY: self._decode_text_payload,
             MsgType.MSG_VAR_REPLY: self._decode_var_payload,
-            MsgType.MSG_VERSION_REPLY: self._decode_version_payload,
+            MsgType.MSG_DEVICE_INFO_REPLY: self._decode_device_info_payload,
             MsgType.MSG_STATE_REPLY: self._decode_state_payload,
             MsgType.MSG_MASK_REPLY: self._decode_mask_payload,
             MsgType.MSG_NODE_ID_REPLY: self._decode_node_id_payload,
@@ -296,7 +317,7 @@ class ProtocolCodec:
 
         if data is None:
             empty_payload_types = {
-                MsgType.MSG_GET_VERSION,
+                MsgType.MSG_GET_DEVICE_INFO,
                 MsgType.MSG_ENTER_BOOTLOADER,
                 MsgType.MSG_GET_MASK,
                 MsgType.MSG_START_LOG,
@@ -339,7 +360,6 @@ class ProtocolCodec:
         elif msg_type == MsgType.MSG_SET_MASK and isinstance(data, (bytes, bytearray)):
             self._validate_mask(data)
             payload = bytes(data)
-            self.set_log_mask(payload)
         elif msg_type == MsgType.MSG_SET_NODE_ID and isinstance(data, NodeIdPayload):
             if not 0 <= int(data.node_id) <= 15:
                 raise ValueError("CAN node ID must be between 0 and 15")
@@ -368,11 +388,12 @@ class ProtocolCodec:
         return RawPacket(msg_type_int=int(msg_type), payload_bytes=payload)
 
     @staticmethod
-    def _decode_version_payload(payload: bytes) -> VersionPayload | None:
-        if len(payload) != 3:
-            _LOG.warning("Invalid VERSION_REPLY payload length: %d, expected 3", len(payload))
+    def _decode_device_info_payload(payload: bytes) -> DeviceInfo | None:
+        try:
+            return DeviceInfo.decode(payload)
+        except ValueError as error:
+            _LOG.warning("Invalid DEVICE_INFO_REPLY: %s", error)
             return None
-        return VersionPayload(major=payload[0], minor=payload[1], patch=payload[2])
 
     @staticmethod
     def _decode_state_payload(payload: bytes) -> StatePayload | None:
@@ -382,11 +403,11 @@ class ProtocolCodec:
         return StatePayload(state=payload[0])
 
     def _decode_mask_payload(self, payload: bytes) -> MaskPayload | None:
-        if len(payload) != SIGNAL_MASK_BYTES:
+        if len(payload) != self.mask_bytes:
             _LOG.warning(
                 "Invalid MASK_REPLY payload length: %d, expected %d",
                 len(payload),
-                SIGNAL_MASK_BYTES,
+                self.mask_bytes,
             )
             return None
         return MaskPayload(mask=bytes(payload))
@@ -503,7 +524,7 @@ class ProtocolCodec:
 
         var_id = payload[0]
         raw_value = _U32.unpack_from(payload, 1)[0]
-        var_meta = next((item for item in VAR_ID_LIST if item["id"] == var_id), None)
+        var_meta = next((item for item in self.variable_list if item["id"] == var_id), None)
         if var_meta is None:
             _LOG.warning("Unknown var_id: %d", var_id)
             return None
@@ -518,7 +539,7 @@ class ProtocolCodec:
 
     def _encode_var_payload(self, var_payload: VarPayload) -> bytes:
         var_meta = next(
-            (item for item in VAR_ID_LIST if item["id"] == var_payload.var_id), None
+            (item for item in self.variable_list if item["id"] == var_payload.var_id), None
         )
         if var_meta is None:
             raise ValueError(f"Unknown var_id: {var_payload.var_id}")

@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QGroupBox, QFor
 from PySide6.QtCore import Qt
 
 from protocol_codec import PIDPayload, Packet
-from protocol_definitions import FOC_PID_CONTROLLERS_LIST, FOCState, MsgType
+from protocol_definitions import FOCState, MsgType
 
 class NoWheelDoubleSpinBox(QDoubleSpinBox):
     def wheelEvent(self, event):
@@ -22,6 +22,17 @@ class PidDock(QDockWidget):
 
         self.pid_widgets = {}
 
+        self.controllers = []
+        self._build_panel()
+
+    def set_definitions(self, entries):
+        self.controllers = [dict(entry) for entry in entries]
+        self.pid_widgets = {}
+        self._connected = False
+        self._driver_state = None
+        self._build_panel()
+
+    def _build_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -33,7 +44,7 @@ class PidDock(QDockWidget):
         self.pid_send_btn.clicked.connect(self._send_all_pid_updates)
         layout.addWidget(self.pid_send_btn)
 
-        for ctrl in FOC_PID_CONTROLLERS_LIST:
+        for ctrl in self.controllers:
             ctrl_id = int(ctrl["id"])
             ctrl_name = ctrl["name"]
 
@@ -58,7 +69,10 @@ class PidDock(QDockWidget):
             layout.addWidget(group)
 
         layout.addStretch()
+        previous = self.widget()
         self.setWidget(panel)
+        if previous is not None:
+            previous.deleteLater()
         self._update_controls_enabled()
 
     def begin_connection(self):
@@ -107,7 +121,7 @@ class PidDock(QDockWidget):
     def _request_all_pid_values(self):
         if not self._in_run_state():
             return
-        for ctrl in FOC_PID_CONTROLLERS_LIST:
+        for ctrl in self.controllers:
             ctrl_id = int(ctrl["id"])
             self.on_command(Packet(
                 msg_type=MsgType.MSG_GET_PID,
@@ -117,7 +131,7 @@ class PidDock(QDockWidget):
     def _send_all_pid_updates(self):
         if not self._in_run_state():
             return
-        for ctrl in FOC_PID_CONTROLLERS_LIST:
+        for ctrl in self.controllers:
             ctrl_id = int(ctrl["id"])
             widgets = self.pid_widgets.get(ctrl_id)
             if widgets is None:

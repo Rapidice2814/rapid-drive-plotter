@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 import queue
 import re
 import struct
@@ -18,10 +20,9 @@ from config import (
     SAMPLE_RATE,
 )
 from USB_debugger.protocol_codec import ProtocolCodec, RawPacket
+from USB_debugger.device_definitions import Definitions, DeviceInfo, PAGE_HEADER
 from USB_debugger.protocol_definitions import (
-    FOC_USB_DEBUG_SIGNAL_LIST,
-    SIGNAL_MASK_BYTES,
-    VAR_ID_LIST,
+    PROTOCOL_VERSION,
     CONTROL_MODE_LABELS,
     ControlMode,
     MsgType,
@@ -33,6 +34,7 @@ from USB_debugger.protocol_definitions import (
 class SimulatorConfig:
     samples_per_packet: int = SIMULATOR_SAMPLES_PER_PACKET
     sample_rate: float = SAMPLE_RATE
+    definitions_path: Path | None = None
 
 
 class SimulatorWorker:
@@ -43,21 +45,6 @@ class SimulatorWorker:
     """
 
     is_simulator = True
-
-    _DEFAULT_PIDS = {
-        0: (0.50, 18.0, 0.001),
-        1: (0.45, 16.0, 0.001),
-        2: (0.08, 0.015, 0.0),
-        3: (1.20, 0.10, 0.0),
-    }
-
-    _DEFAULT_VARIABLES = {
-        0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0,
-        4: 20.0, 5: 48.0, 6: 58.0, 7: 20.0,
-        8: 30.0, 9: 100.0, 10: 90.0, 11: 7,
-        12: 0.05, 13: 0.00012, 14: 0.1, 15: 0,
-        16: 0.5, 17: 100.0, 18: 1000.0,
-    }
 
     def __init__(
         self,
@@ -74,8 +61,19 @@ class SimulatorWorker:
         self.disconnect_callback = disconnect_callback
         self.ready_callback = ready_callback
         self.config = config or SimulatorConfig()
-        max_samples_per_packet = (0xFFFF - struct.calcsize("<IHH")) // (
-            4 * len(FOC_USB_DEBUG_SIGNAL_LIST)
+        fixture = json.loads((self.config.definitions_path or Path(__file__).with_name("definitions.json")).read_text(encoding="utf-8"))
+        lists = []
+        for kind, name in enumerate(("signals", "variables", "pids")):
+            lists.append([dict(entry, **{"bit" if kind == 0 else "id": index})
+                          for index, entry in enumerate(fixture[name])])
+        self.definitions = Definitions(*lists).validate()
+        self.info = DeviceInfo(PROTOCOL_VERSION, (1, 0, 0), tuple(map(len, lists)),
+                               (len(lists[0]) + 7) // 8, min(8, len(lists[0])),
+                               int(self.config.sample_rate), 123, 1019, self.definitions.fingerprint())
+        self.info.validate()
+        self.variable_ids = {entry["name"]: entry["id"] for entry in self.definitions.variables}
+        max_samples_per_packet = (self.info.max_reply - struct.calcsize("<IHH")) // (
+            4 * max(1, self.info.max_signals)
         )
         if not 0 < self.config.samples_per_packet <= max_samples_per_packet:
             raise ValueError(
@@ -85,6 +83,7 @@ class SimulatorWorker:
             raise ValueError("sample_rate must be positive")
 
         self.codec = ProtocolCodec()
+        self.codec.set_definitions(self.definitions, self.info)
         self.rx_buffer = bytearray()
         self._command_buffer = bytearray()
         self._stop_event = threading.Event()
@@ -93,8 +92,9 @@ class SimulatorWorker:
         self._control_mode: ControlMode | None = None
         self._timestamp = 0
         self._started_at = time.monotonic()
-        self._pids = dict(self._DEFAULT_PIDS)
-        self._variables = dict(self._DEFAULT_VARIABLES)
+        self._pids = {entry["id"]: tuple(entry.get("default", (0.0, 0.0, 0.0))) for entry in self.definitions.pids}
+        self._default_variables = {entry["id"]: entry.get("default", 0) for entry in self.definitions.variables}
+        self._variables = dict(self._default_variables)
         self._saved_variables = dict(self._variables)
         self._can_node_id = 0
         self._can_cyclic_rates = {
@@ -201,22 +201,50 @@ class SimulatorWorker:
             return
 
         payload = raw_packet.payload_bytes
-        if msg_type == MsgType.MSG_GET_VERSION:
+        if msg_type == MsgType.MSG_GET_DEVICE_INFO:
             if payload:
                 self._invalid_payload(msg_type)
                 return
-            self._reply(MsgType.MSG_VERSION_REPLY, bytes((1, 0, 0)))
+            self._reply(MsgType.MSG_DEVICE_INFO_REPLY, self.info.encode())
+        elif msg_type == MsgType.MSG_GET_DEFINITIONS:
+            if len(payload) != 3:
+                self._invalid_payload(msg_type)
+                return
+            kind, start = struct.unpack("<BH", payload)
+            if kind >= 3:
+                self._reply(MsgType.MSG_DEFINITIONS_ERROR, payload + bytes((1,)))
+                return
+            entries = self.definitions.lists()[kind]
+            if start >= len(entries) and not (start == 0 and not entries):
+                self._reply(MsgType.MSG_DEFINITIONS_ERROR, payload + bytes((2,)))
+                return
+            lines = self.definitions.text(kind).splitlines(keepends=True)[start:]
+            text = bytearray()
+            returned = 0
+            for line in lines:
+                encoded = line.encode("utf-8")
+                if PAGE_HEADER.size + len(text) + len(encoded) > 256:
+                    break
+                text.extend(encoded)
+                returned += 1
+            self._reply(MsgType.MSG_DEFINITIONS_REPLY,
+                        PAGE_HEADER.pack(kind, start, len(entries), returned) + text)
         elif msg_type == MsgType.MSG_GET_MASK:
             if payload:
                 self._invalid_payload(msg_type)
                 return
             self._reply(MsgType.MSG_MASK_REPLY, self.codec.log_mask)
         elif msg_type == MsgType.MSG_SET_MASK:
-            if len(payload) != SIGNAL_MASK_BYTES:
+            if len(payload) != self.info.mask_bytes:
                 self._invalid_payload(msg_type)
                 return
             if self._logging:
                 self._reply(MsgType.MSG_ERROR, b"")
+                return
+            supported = sum(1 << signal["bit"] for signal in self.definitions.signals)
+            mask = int.from_bytes(payload, "little")
+            if mask & ~supported or mask.bit_count() > self.info.max_signals:
+                self._invalid_payload(msg_type)
                 return
             self.codec.set_log_mask(payload)
             self._ack(msg_type)
@@ -278,6 +306,7 @@ class SimulatorWorker:
                 MsgType.MSG_TEXT_REPLY,
                 self._text_response(text_command).encode("utf-8"),
             )
+            self._ack(msg_type)
         elif msg_type == MsgType.MSG_SET_STATE:
             if len(payload) != 1:
                 self._invalid_payload(msg_type)
@@ -292,7 +321,7 @@ class SimulatorWorker:
                     previous_state == int(FOCState.FOC_STATE_RUN)
                     and self._state != int(FOCState.FOC_STATE_RUN)
                 ):
-                    for var_id in (0, 1, 2, 3):
+                    for var_id in self._setpoint_ids():
                         self._variables[var_id] = 0.0
                     self._control_mode = None
                 elif (
@@ -322,7 +351,7 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             # The firmware resets the setpoints when changing control modes.
-            for var_id in (0, 1, 2, 3):
+            for var_id in self._setpoint_ids():
                 self._variables[var_id] = 0.0
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_CONTROL_MODE:
@@ -420,7 +449,7 @@ class SimulatorWorker:
                 return
             # Clearing flash restores its contents to factory defaults. Keep
             # the current live values unchanged until a FLASH_LOAD is requested.
-            self._saved_variables = dict(self._DEFAULT_VARIABLES)
+            self._saved_variables = dict(self._default_variables)
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_ENTER_BOOTLOADER:
             if payload:
@@ -462,22 +491,32 @@ class SimulatorWorker:
             self._control_mode = modes[lowered]
             self._state = int(FOCState.FOC_STATE_RUN)
             # Match the firmware behavior when switching control modes.
-            for var_id in (0, 1, 2, 3):
+            for var_id in self._setpoint_ids():
                 self._variables[var_id] = 0.0
             return f"Simulator control mode: {CONTROL_MODE_LABELS[self._control_mode]}"
 
         setpoint = re.fullmatch(r"(?i)(Sq|Sd|Ss|Sp)([-+]?(?:\d+(?:\.\d*)?|\.\d+))", command)
         if setpoint:
-            variable_id = {"sd": 0, "sq": 1, "sp": 2, "ss": 3}[setpoint.group(1).lower()]
+            name = {"sd": "dq_current_setpoint.d", "sq": "dq_current_setpoint.q", "sp": "angle_setpoint", "ss": "speed_setpoint"}[setpoint.group(1).lower()]
+            variable_id = self.variable_ids.get(name)
+            if variable_id is None:
+                return "Simulator variable is unavailable"
             value = float(setpoint.group(2))
             self._variables[variable_id] = value
             return f"Simulator {setpoint.group(1)} setpoint: {value:g}"
 
         return f"SIMULATOR: received: {command}"
 
-    @staticmethod
-    def _var_meta(var_id: int) -> dict | None:
-        return next((item for item in VAR_ID_LIST if int(item["id"]) == var_id), None)
+    def _setpoint_ids(self):
+        return [self.variable_ids[name] for name in
+                ("dq_current_setpoint.d", "dq_current_setpoint.q", "angle_setpoint", "speed_setpoint")
+                if name in self.variable_ids]
+
+    def _value(self, name):
+        return self._variables.get(self.variable_ids.get(name), 0)
+
+    def _var_meta(self, var_id: int) -> dict | None:
+        return next((item for item in self.definitions.variables if int(item["id"]) == var_id), None)
 
     def _reply_var(self, var_id: int) -> None:
         meta = self._var_meta(var_id)
@@ -528,7 +567,7 @@ class SimulatorWorker:
         angle = 2.0 * math.pi * 0.8 * elapsed
         phase = angle + (timestamp / self.config.sample_rate) * 2.0 * math.pi * 3.0
         values: dict[str, int | float] = {
-            "timestamp": timestamp,
+            "tick": timestamp,
             "adc_values.motor_temp": 35.0 + 0.4 * math.sin(elapsed / 8.0),
             "adc_values.mosfet_temp": 31.0 + 0.3 * math.sin(elapsed / 6.0),
             "adc_values.vbus": 48.0 + 0.5 * math.sin(elapsed / 2.0),
@@ -538,10 +577,10 @@ class SimulatorWorker:
             "adc_values.phase_current.c": 4.0 * math.sin(phase + 2.0 * math.pi / 3.0),
             "ab_current.alpha": 4.0 * math.sin(phase),
             "ab_current.beta": 4.0 * math.cos(phase),
-            "dq_current.d": float(self._variables[0]) + 0.15 * math.sin(phase),
-            "dq_current.q": float(self._variables[1]) + 0.15 * math.cos(phase),
-            "dq_current_filtered.d": float(self._variables[0]) + 0.1 * math.sin(phase),
-            "dq_current_filtered.q": float(self._variables[1]) + 0.1 * math.cos(phase),
+            "dq_current.d": float(self._value("dq_current_setpoint.d")) + 0.15 * math.sin(phase),
+            "dq_current.q": float(self._value("dq_current_setpoint.q")) + 0.15 * math.cos(phase),
+            "dq_current_filtered.d": float(self._value("dq_current_setpoint.d")) + 0.1 * math.sin(phase),
+            "dq_current_filtered.q": float(self._value("dq_current_setpoint.q")) + 0.1 * math.cos(phase),
             "phase_voltage.a": 24.0 * math.sin(phase),
             "phase_voltage.b": 24.0 * math.sin(phase - 2.0 * math.pi / 3.0),
             "phase_voltage.c": 24.0 * math.sin(phase + 2.0 * math.pi / 3.0),
@@ -552,12 +591,12 @@ class SimulatorWorker:
             "encoder_angle_mechanical_wrapped": angle % (2.0 * math.pi),
             "encoder_angle_mechanical_unwrapped": angle,
             "encoder_speed_mechanical": 0.8 + 0.05 * math.sin(elapsed),
-            "encoder_angle_electrical": (angle * int(self._variables[11])) % (2.0 * math.pi),
-            "encoder_speed_electrical": 0.8 * int(self._variables[11]) + 0.5 * math.sin(elapsed),
-            "dq_current_setpoint.d": float(self._variables[0]),
-            "dq_current_setpoint.q": float(self._variables[1]),
-            "angle_setpoint": float(self._variables[2]),
-            "speed_setpoint": float(self._variables[3]),
+            "encoder_angle_electrical": (angle * int(self._value("flash_data.motor.pole_pairs"))) % (2.0 * math.pi),
+            "encoder_speed_electrical": 0.8 * int(self._value("flash_data.motor.pole_pairs")) + 0.5 * math.sin(elapsed),
+            "dq_current_setpoint.d": float(self._value("dq_current_setpoint.d")),
+            "dq_current_setpoint.q": float(self._value("dq_current_setpoint.q")),
+            "angle_setpoint": float(self._value("angle_setpoint")),
+            "speed_setpoint": float(self._value("speed_setpoint")),
             "execution_time.loop_max": 120 + int(8 * abs(math.sin(phase))),
             "hfi.injection_phase": angle % (2.0 * math.pi),
             "hfi.i_alpha_l_raw": 0.2 * math.sin(phase * 2.0),

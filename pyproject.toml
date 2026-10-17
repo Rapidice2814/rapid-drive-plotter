@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rapid-drive-plotter"
+version = "0.3.0"
+description = "USB telemetry and configuration application for Rapid Drive"
+requires-python = ">=3.10"
+dependencies = ["PySide6", "pyqtgraph", "numpy", "h5py", "pyserial"]
+
+[project.scripts]
+rapid-drive-plotter = "USB_debugger.debugger_main:main"
+
+[tool.setuptools]
+py-modules = ["config"]
+
+[tool.setuptools.packages.find]
+include = ["USB_debugger*", "Serial_Simulator*"]
+
+[tool.setuptools.package-data]
+Serial_Simulator = ["definitions.json"]

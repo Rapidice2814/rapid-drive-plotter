@@ -11,6 +11,7 @@ import numpy as np
 
 from protocol_codec import LogPayload
 from config import LOG_FOLDER
+from protocol_definitions import PROTOCOL_VERSION
 
 _LOG = logging.getLogger(__name__)
 
@@ -30,8 +31,10 @@ class HDF5LogLogger:
         batch_size: int = 100,
         flush_interval: float = 1.0,
         max_queue_size: int = 10000,
+        metadata: dict | None = None,
     ):
         self.filename = Path(filename)
+        self.metadata = dict(metadata or {})
         self.batch_size = int(batch_size)
         self.flush_interval = float(flush_interval)
         if self.batch_size <= 0 or self.flush_interval <= 0 or max_queue_size <= 0:
@@ -67,6 +70,9 @@ class HDF5LogLogger:
     def _open_file(self) -> None:
         if self.file is None:
             self.file = h5py.File(self.filename, "x")
+            self.file.attrs["protocol_version"] = PROTOCOL_VERSION
+            for name, value in self.metadata.items():
+                self.file.attrs[name] = value
 
     def _ensure_datasets(self, payload: LogPayload) -> None:
         if self.file is None:

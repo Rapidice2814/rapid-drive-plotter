@@ -1,4 +1,5 @@
 import logging
+import json
 import queue
 import sys
 import threading
@@ -13,6 +14,8 @@ for _import_path in (str(_PROJECT_ROOT), str(_DEBUGGER_DIR)):
 del _import_path
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
+from protocol_session import ProtocolSession
 
 from protocol_codec import LogPayload, Packet, ProtocolCodec
 from protocol_definitions import MsgType
@@ -42,6 +45,15 @@ def main():
     active_logger: HDF5LogLogger | None = None
     logger_lock = threading.Lock()
 
+    def recording_metadata():
+        metadata = {"sample_rate_hz": session.sample_rate,
+                    "firmware_version": ".".join(map(str, session.firmware_version or ())) or "unknown"}
+        if session.definitions is not None:
+            metadata.update(definitions=json.dumps(session.definitions.as_dict()),
+                            signal_definitions=json.dumps(session.definitions.signals),
+                            definitions_fingerprint=f"{session.info.fingerprint:016x}")
+        return metadata
+
     def set_logging_enabled(enabled: bool) -> None:
         """Start a fresh log on enable and drain/close it on disable."""
         nonlocal active_logger
@@ -53,6 +65,7 @@ def main():
                     filename=get_log_filename(),
                     batch_size=50,
                     flush_interval=0.5,
+                    metadata=recording_metadata(),
                 )
                 logger.start()
                 active_logger = logger
@@ -70,13 +83,67 @@ def main():
 
     plot.set_logging_toggle_callback(set_logging_enabled)
 
-    plot.set_command_sender(
-        lambda pkt: command_queue.put(codec.build_packet(codec.encode_packet(pkt)))
-    )
+    def session_failed(message):
+        _LOG.error(message)
+        plot.setWindowTitle("Serial Plotter — " + message)
+        stop_worker(join=True)
+        plot.enqueue_text(message)
+
+    def session_ready():
+        with logger_lock:
+            if active_logger is not None:
+                active_logger.metadata.update(recording_metadata())
+        plot.connection_ready.emit((plot.worker, float(session.sample_rate)))
+
+    def command_rejected(message):
+        _LOG.warning(message)
+        plot.enqueue_text(message)
+
+    command_rejections = queue.Queue()
+    session = ProtocolSession(codec, command_queue.put, session_ready,
+                              session_failed, SAMPLE_RATE,
+                              logging_changed=plot.logging_confirmed.emit,
+                              rejected=command_rejections.put,
+                              definitions_ready=lambda definitions, info, mask:
+                                  plot.definitions_received.emit((definitions, info, mask, plot.worker)))
+    # Rejections, failures, and timeouts are delivered to the GUI thread.
+    failures = queue.Queue()
+    session.failed_callback = failures.put
+    def poll_session():
+        session.tick()
+        while True:
+            try:
+                message = command_rejections.get_nowait()
+            except queue.Empty:
+                break
+            command_rejected(message)
+        try:
+            message = failures.get_nowait()
+        except queue.Empty:
+            return
+        session_failed(message)
+    session_timer = QTimer(app)
+    session_timer.timeout.connect(poll_session)
+    session_timer.start(100)
+    plot.set_command_sender(session.send)
 
     def on_data(rx_buffer: bytearray):
+        with session.lock:
+            if not session.active:
+                rx_buffer.clear()
+                return
+            handle_data(rx_buffer)
+
+    def handle_data(rx_buffer: bytearray):
         packets = codec.extract_packets(rx_buffer)
         for packet in packets:
+            session.receive(packet)
+            if not session.active:
+                return
+            if packet.msg_type_int == MsgType.MSG_DEFINITIONS_REPLY:
+                continue
+            if packet.msg_type_int == MsgType.MSG_LOG_DATA and session.initializing:
+                continue
             decoded = codec.decode_packet(packet)
             if decoded is not None and isinstance(decoded.data, LogPayload):
                 # Serialize the logger reference and enqueue with toggle/stop so
@@ -89,6 +156,7 @@ def main():
                 plot.enqueue_reply(decoded)
 
     def stop_worker(join: bool = True):
+        session.stop()
         worker = plot.worker
         if worker is None:
             return
@@ -101,29 +169,25 @@ def main():
 
     def start_connection(endpoint: str):
         stop_worker(join=True)
+        if active_logger is not None:
+            set_logging_enabled(False)
+            set_logging_enabled(True)
+        plot.setWindowTitle("Serial Plotter")
+        while not failures.empty():
+            failures.get_nowait()
+        while not command_rejections.empty():
+            command_rejections.get_nowait()
 
-        # Capture and encode the selected mask on the GUI thread; worker threads
-        # must not access Qt widgets. The callbacks run only once the transport
-        # is ready and its stale command queue has been cleared.
-        selected_mask = bytes(plot.signal_dock.current_mask)
-        initialization_packets = (
-            Packet(msg_type=MsgType.MSG_STOP_LOG, data=None),
-            Packet(msg_type=MsgType.MSG_SET_MASK, data=selected_mask),
-            Packet(msg_type=MsgType.MSG_START_LOG, data=None),
-        )
-        initialization_commands = tuple(
-            codec.build_packet(codec.encode_packet(packet))
-            for packet in initialization_packets
-        )
-
+        # Capture names on the GUI thread. IDs and mask width are resolved only
+        # after the worker has read device info and validated definitions.
+        selected_names = plot.signal_dock.selected_names()
         def on_worker_ready():
-            for command in initialization_commands:
-                command_queue.put(command)
-            plot.transport_ready.emit()
+            session.start(selected_names)
 
         worker_holder: dict[str, object] = {}
 
         def worker_disconnect():
+            session.stop()
             # Tag the notification so delayed events from an old connection
             # cannot mark a newer connection as failed.
             disconnecting_worker = worker_holder.get("worker")

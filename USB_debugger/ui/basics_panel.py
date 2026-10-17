@@ -28,6 +28,7 @@ class BasicsDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("Basics", parent)
         self.on_command = on_command
+        self.variable_ids = {}
         self._connected = False
         self._current_state: FOCState | None = None
         self._current_control_mode: ControlMode | None = None
@@ -414,12 +415,15 @@ class BasicsDock(QDockWidget):
         self.request_control_mode()
         # Switching modes can reset the mode's setpoint. Refresh the matching
         # target fields so the Setpoints tab immediately reflects the driver.
-        mode_variable_ids = {
-            ControlMode.CONTROL_MODE_OPENLOOP: (0, 1),
-            ControlMode.CONTROL_MODE_POSITION: (2,),
-            ControlMode.CONTROL_MODE_SPEED: (3,),
+        mode_variable_names = {
+            ControlMode.CONTROL_MODE_OPENLOOP: ("dq_current_setpoint.d", "dq_current_setpoint.q"),
+            ControlMode.CONTROL_MODE_POSITION: ("angle_setpoint",),
+            ControlMode.CONTROL_MODE_SPEED: ("speed_setpoint",),
         }
-        for var_id in mode_variable_ids[mode]:
+        for name in mode_variable_names[mode]:
+            if name not in self.variable_ids:
+                continue
+            var_id = self.variable_ids[name]
             self.on_command(
                 Packet(
                     msg_type=MsgType.MSG_GET_VAR,
@@ -442,14 +446,14 @@ class BasicsDock(QDockWidget):
     def request_version(self):
         if not self._connected or self.version_reply_timeout_timer.isActive():
             return
-        self.on_command(Packet(msg_type=MsgType.MSG_GET_VERSION, data=None))
+        self.on_command(Packet(msg_type=MsgType.MSG_GET_DEVICE_INFO, data=None))
         self.version_reply_timeout_timer.start()
 
     def _on_version_timeout(self):
         if self._connected:
             self._set_driver_status("ERROR", "error")
             self.driver_status_label.setToolTip(
-                "No valid VERSION_REPLY was received before the timeout."
+                "No valid DEVICE_INFO_REPLY was received before the timeout."
             )
 
     def request_state(self):

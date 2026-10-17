@@ -15,9 +15,9 @@ from protocol_codec import (
     StatePayload,
     TextPayload,
     VarPayload,
-    VersionPayload,
 )
 from protocol_definitions import MsgType
+from device_definitions import DeviceInfo
 
 from serial_worker import SerialWorker
 from config import SIMULATOR_ENDPOINT
@@ -36,7 +36,10 @@ from ui.can_panel import CanInterfaceDock
 class PlotWindow(QMainWindow):
     reply_received = Signal(object)
     serial_disconnected = Signal(object)
-    transport_ready = Signal()
+    transport_ready = Signal(float)
+    logging_confirmed = Signal(bool)
+    definitions_received = Signal(object)
+    connection_ready = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -55,6 +58,9 @@ class PlotWindow(QMainWindow):
         self.reply_received.connect(self.on_reply)
         self.serial_disconnected.connect(self._handle_serial_disconnected)
         self.transport_ready.connect(self._handle_transport_ready)
+        self.logging_confirmed.connect(self._handle_logging_confirmed)
+        self.definitions_received.connect(self._handle_definitions)
+        self.connection_ready.connect(self._handle_connection_ready)
 
     def set_command_sender(self, sender: Callable[[Packet], None]):
         self.on_command = sender
@@ -125,8 +131,6 @@ class PlotWindow(QMainWindow):
             on_plot_reset=self._back_to_home,
             parent=self,
         )
-        self.control_dock.btn_start.clicked.connect(self._on_controls_start_logging)
-        self.control_dock.btn_stop.clicked.connect(self._on_controls_stop_logging)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.control_dock)
 
         self.var_dock = VarDock(self.on_command, self)
@@ -198,6 +202,7 @@ class PlotWindow(QMainWindow):
                 simulator=bool(getattr(worker, "is_simulator", False)),
             )
         if worker is None and hasattr(self, "plot_panel"):
+            self._clear_definitions()
             self._transport_ready = False
             self.plot_panel.set_transport_connected(False)
             self.plot_panel.set_logging_active(False)
@@ -223,6 +228,7 @@ class PlotWindow(QMainWindow):
         # been stopped or replaced by a newer connection.
         if disconnected_worker is not self.worker:
             return
+        self._clear_definitions()
         self._transport_ready = False
         self.worker = None
         self.connect_dock.set_connected(False)
@@ -234,9 +240,11 @@ class PlotWindow(QMainWindow):
         self.setpoint_dock.set_disconnected()
         self.can_dock.set_disconnected()
 
-    @Slot()
-    def _handle_transport_ready(self) -> None:
+    @Slot(float)
+    def _handle_transport_ready(self, sample_rate: float) -> None:
+        self.plot_panel.sample_rate = sample_rate
         self._transport_ready = True
+        self.signal_dock.set_connected(True)
         self.plot_panel.set_transport_connected(True)
         # Connection initialization starts telemetry logging after the port is ready.
         self.plot_panel.set_logging_active(True)
@@ -246,6 +254,31 @@ class PlotWindow(QMainWindow):
         self.setpoint_dock.transport_ready()
         self.can_dock.transport_ready()
         self._refresh_visible_data_tabs()
+
+    @Slot(object)
+    def _handle_connection_ready(self, message):
+        worker, sample_rate = message
+        if worker is self.worker and worker is not None:
+            self.transport_ready.emit(sample_rate)
+
+    @Slot(object)
+    def _handle_definitions(self, message):
+        definitions, info, mask, worker = message
+        if worker is not self.worker or worker is None:
+            return
+        self.signal_dock.set_definitions(definitions, info, mask)
+        self.pid_dock.set_definitions(definitions.pids)
+        self.var_dock.set_definitions(definitions.variables)
+        self.setpoint_dock.set_definitions(definitions.variables)
+        self.basics_dock.variable_ids = {entry["name"]: entry["id"] for entry in definitions.variables}
+        self.basics_dock.set_version(*info.firmware)
+
+    def _clear_definitions(self):
+        self.signal_dock.clear_definitions()
+        self.pid_dock.set_definitions([])
+        self.var_dock.set_definitions([])
+        self.setpoint_dock.set_definitions([])
+        self.basics_dock.variable_ids = {}
 
     @Slot(bool)
     def _on_basics_visibility_changed(self, visible: bool) -> None:
@@ -280,11 +313,11 @@ class PlotWindow(QMainWindow):
     @Slot(object)
     def on_reply(self, packet: Packet):
         if (
-            packet.msg_type == MsgType.MSG_VERSION_REPLY
-            and isinstance(packet.data, VersionPayload)
+            packet.msg_type == MsgType.MSG_DEVICE_INFO_REPLY
+            and isinstance(packet.data, DeviceInfo)
         ):
             self.basics_dock.set_version(
-                packet.data.major, packet.data.minor, packet.data.patch
+                *packet.data.firmware
             )
 
         elif (
@@ -360,15 +393,13 @@ class PlotWindow(QMainWindow):
         if send_command and self._transport_ready:
             msg_type = MsgType.MSG_START_LOG if active else MsgType.MSG_STOP_LOG
             self.on_command(Packet(msg_type=msg_type, data=None))
+            return
         self.plot_panel.set_logging_active(active)
 
-    def _on_controls_start_logging(self):
+    @Slot(bool)
+    def _handle_logging_confirmed(self, active: bool):
         if self._transport_ready:
-            self.plot_panel.set_logging_active(True)
-
-    def _on_controls_stop_logging(self):
-        if self._transport_ready:
-            self.plot_panel.set_logging_active(False)
+            self.plot_panel.set_logging_active(active)
 
     def _handle_text_command(self, cmd: str):
         cmd = cmd.strip()

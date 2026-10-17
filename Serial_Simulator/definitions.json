@@ -1,0 +1,279 @@
+{
+  "signals": [
+    {
+      "type": "u32",
+      "name": "tick"
+    },
+    {
+      "type": "f",
+      "name": "adc_values.motor_temp"
+    },
+    {
+      "type": "f",
+      "name": "adc_values.mosfet_temp"
+    },
+    {
+      "type": "f",
+      "name": "adc_values.vbus"
+    },
+    {
+      "type": "f",
+      "name": "ibus"
+    },
+    {
+      "type": "f",
+      "name": "adc_values.phase_current.a"
+    },
+    {
+      "type": "f",
+      "name": "adc_values.phase_current.b"
+    },
+    {
+      "type": "f",
+      "name": "adc_values.phase_current.c"
+    },
+    {
+      "type": "f",
+      "name": "ab_current.alpha"
+    },
+    {
+      "type": "f",
+      "name": "ab_current.beta"
+    },
+    {
+      "type": "f",
+      "name": "dq_current.d"
+    },
+    {
+      "type": "f",
+      "name": "dq_current.q"
+    },
+    {
+      "type": "f",
+      "name": "dq_current_filtered.d"
+    },
+    {
+      "type": "f",
+      "name": "dq_current_filtered.q"
+    },
+    {
+      "type": "f",
+      "name": "phase_voltage.a"
+    },
+    {
+      "type": "f",
+      "name": "phase_voltage.b"
+    },
+    {
+      "type": "f",
+      "name": "phase_voltage.c"
+    },
+    {
+      "type": "f",
+      "name": "ab_voltage.alpha"
+    },
+    {
+      "type": "f",
+      "name": "ab_voltage.beta"
+    },
+    {
+      "type": "f",
+      "name": "dq_voltage.d"
+    },
+    {
+      "type": "f",
+      "name": "dq_voltage.q"
+    },
+    {
+      "type": "f",
+      "name": "encoder_angle_mechanical_wrapped"
+    },
+    {
+      "type": "f",
+      "name": "encoder_angle_mechanical_unwrapped"
+    },
+    {
+      "type": "f",
+      "name": "encoder_speed_mechanical"
+    },
+    {
+      "type": "f",
+      "name": "encoder_angle_electrical"
+    },
+    {
+      "type": "f",
+      "name": "encoder_speed_electrical"
+    },
+    {
+      "type": "f",
+      "name": "dq_current_setpoint.d"
+    },
+    {
+      "type": "f",
+      "name": "dq_current_setpoint.q"
+    },
+    {
+      "type": "f",
+      "name": "angle_setpoint"
+    },
+    {
+      "type": "f",
+      "name": "speed_setpoint"
+    },
+    {
+      "type": "u32",
+      "name": "execution_time.loop_max"
+    },
+    {
+      "type": "f",
+      "name": "hfi.injection_phase"
+    },
+    {
+      "type": "f",
+      "name": "hfi.i_alpha_l_raw"
+    },
+    {
+      "type": "f",
+      "name": "hfi.i_beta_l_raw"
+    },
+    {
+      "type": "f",
+      "name": "hfi.i_alpha_l_filtered"
+    },
+    {
+      "type": "f",
+      "name": "hfi.i_beta_l_filtered"
+    }
+  ],
+  "variables": [
+    {
+      "type": "f",
+      "name": "dq_current_setpoint.d",
+      "default": 0
+    },
+    {
+      "type": "f",
+      "name": "dq_current_setpoint.q",
+      "default": 0
+    },
+    {
+      "type": "f",
+      "name": "angle_setpoint",
+      "default": 0
+    },
+    {
+      "type": "f",
+      "name": "speed_setpoint",
+      "default": 0
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.max_dq_current",
+      "default": 20
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.max_dq_voltage",
+      "default": 48
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.vbus_overvoltage_trip_level",
+      "default": 58
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.vbus_undervoltage_trip_level",
+      "default": 20
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.ibus_overcurrent_trip_level",
+      "default": 30
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.motor_temp_trip_level",
+      "default": 100
+    },
+    {
+      "type": "f",
+      "name": "flash_data.limits.mosfet_temp_trip_level",
+      "default": 90
+    },
+    {
+      "type": "u32",
+      "name": "flash_data.motor.pole_pairs",
+      "default": 7
+    },
+    {
+      "type": "f",
+      "name": "flash_data.motor.phase_resistance",
+      "default": 0.05
+    },
+    {
+      "type": "f",
+      "name": "flash_data.motor.phase_inductance",
+      "default": 0.00012
+    },
+    {
+      "type": "f",
+      "name": "flash_data.motor.torque_constant",
+      "default": 0.1
+    },
+    {
+      "type": "u32",
+      "name": "flash_data.hfi.hfi_enabled",
+      "default": 0
+    },
+    {
+      "type": "f",
+      "name": "flash_data.hfi.injection_amplitude",
+      "default": 0.5
+    },
+    {
+      "type": "f",
+      "name": "flash_data.hfi.injection_omega",
+      "default": 100
+    },
+    {
+      "type": "f",
+      "name": "flash_data.controller.current_control_bandwidth",
+      "default": 1000
+    }
+  ],
+  "pids": [
+    {
+      "name": "pid_current_d",
+      "default": [
+        0.5,
+        18,
+        0.001
+      ]
+    },
+    {
+      "name": "pid_current_q",
+      "default": [
+        0.45,
+        16,
+        0.001
+      ]
+    },
+    {
+      "name": "pid_speed",
+      "default": [
+        0.08,
+        0.015,
+        0
+      ]
+    },
+    {
+      "name": "pid_position",
+      "default": [
+        1.2,
+        0.1,
+        0
+      ]
+    }
+  ]
+}

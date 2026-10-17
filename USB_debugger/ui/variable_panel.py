@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QValidator
 
 from protocol_codec import VarPayload, Packet
-from protocol_definitions import FOCState, VAR_ID_LIST, MsgType
+from protocol_definitions import FOCState, MsgType
 
 
 class UInt32Validator(QValidator):
@@ -55,6 +55,17 @@ class VarDock(QDockWidget):
 
         self.var_widgets = {}
 
+        self.variables = []
+        self._build_panel()
+
+    def set_definitions(self, entries):
+        self.variables = [dict(entry) for entry in entries]
+        self.var_widgets = {}
+        self._connected = False
+        self._driver_state = None
+        self._build_panel()
+
+    def _build_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -68,7 +79,7 @@ class VarDock(QDockWidget):
         var_container = QWidget()
         var_layout = QVBoxLayout(var_container)
 
-        for var in VAR_ID_LIST:
+        for var in self.variables:
             var_id = int(var["id"])
             var_name = var["name"]
             var_type = var["type"]
@@ -113,7 +124,10 @@ class VarDock(QDockWidget):
         scroll.setWidget(var_container)
         layout.addWidget(scroll)
 
+        previous = self.widget()
         self.setWidget(panel)
+        if previous is not None:
+            previous.deleteLater()
         self._update_setpoint_controls_enabled()
 
     def begin_connection(self):
@@ -144,14 +158,16 @@ class VarDock(QDockWidget):
         setpoints_enabled = (
             self._connected and self._driver_state == FOCState.FOC_STATE_RUN
         )
-        for var_id in (0, 1, 2, 3):
-            widgets = self.var_widgets.get(var_id)
-            if widgets is not None:
+        setpoint_names = {"dq_current_setpoint.d", "dq_current_setpoint.q", "angle_setpoint", "speed_setpoint"}
+        for widgets in self.var_widgets.values():
+            if widgets["name"] in setpoint_names:
                 widgets["value"].setEnabled(setpoints_enabled)
                 widgets["send_btn"].setEnabled(setpoints_enabled)
 
     def _request_all_var_values(self):
-        for var in VAR_ID_LIST:
+        if not self._connected:
+            return
+        for var in self.variables:
             var_id = int(var["id"])
             self.on_command(
                 Packet(
@@ -161,12 +177,12 @@ class VarDock(QDockWidget):
             )
 
     def _send_var_update(self, var_id: int):
-        if var_id in (0, 1, 2, 3) and not (
-            self._connected and self._driver_state == FOCState.FOC_STATE_RUN
-        ):
+        if not self._connected:
             return
         widgets = self.var_widgets.get(var_id)
         if widgets is None:
+            return
+        if widgets["name"] in {"dq_current_setpoint.d", "dq_current_setpoint.q", "angle_setpoint", "speed_setpoint"} and self._driver_state != FOCState.FOC_STATE_RUN:
             return
 
         value_widget = widgets["value"]

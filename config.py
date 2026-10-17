@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -49,4 +50,7 @@ SIMULATOR_ENDPOINT = "__simulator__"
 SIMULATOR_SAMPLES_PER_PACKET = 20
 
 # HDF5 telemetry output directory (default: the project-root logs folder).
-LOG_FOLDER = PROJECT_ROOT / "logs"
+LOG_FOLDER = Path(os.environ.get("RAPID_DRIVE_LOG_DIR") or (
+    Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or
+         Path.home() / ".local" / "share") / "RapidDrive" / "logs"
+))

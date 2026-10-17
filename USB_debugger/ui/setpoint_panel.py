@@ -23,8 +23,8 @@ SETPOINT_SECTIONS = (
         "button": "Open loop control",
         "mode": ControlMode.CONTROL_MODE_OPENLOOP,
         "fields": (
-            (0, "D-axis current", " A", 0.1),
-            (1, "Q-axis current", " A", 0.1),
+            ("dq_current_setpoint.d", "D-axis current", " A", 0.1),
+            ("dq_current_setpoint.q", "Q-axis current", " A", 0.1),
         ),
     },
     {
@@ -32,14 +32,14 @@ SETPOINT_SECTIONS = (
         "title": "Position control",
         "button": "Position control",
         "mode": ControlMode.CONTROL_MODE_POSITION,
-        "fields": ((2, "Angle", " rad", 0.1),),
+        "fields": (("angle_setpoint", "Angle", " rad", 0.1),),
     },
     {
         "key": "speed",
         "title": "Speed control",
         "button": "Speed control",
         "mode": ControlMode.CONTROL_MODE_SPEED,
-        "fields": ((3, "Speed", " rad/s", 1.0),),
+        "fields": (("speed_setpoint", "Speed", " rad/s", 1.0),),
     },
 )
 
@@ -55,13 +55,14 @@ class SetpointDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("Setpoints", parent)
         self.on_command = on_command
+        self.variable_ids = {}
         self._connected = False
         self._active_mode: str | None = None
         self._driver_state: FOCState | None = None
-        self.value_widgets: dict[int, NoWheelDoubleSpinBox] = {}
-        self.set_buttons: dict[int, QPushButton] = {}
+        self.value_widgets: dict[str, NoWheelDoubleSpinBox] = {}
+        self.set_buttons: dict[str, QPushButton] = {}
         self.mode_buttons: dict[str, QPushButton] = {}
-        self.var_modes: dict[int, str] = {}
+        self.var_modes: dict[str, str] = {}
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -141,14 +142,23 @@ class SetpointDock(QDockWidget):
         self.setWidget(panel)
         self._update_controls_enabled()
 
+    def set_definitions(self, entries):
+        self.variable_ids = {entry["name"]: entry["id"] for entry in entries if entry["type"] == "f"}
+        self._clear_active_mode()
+
+    def _mode_available(self, key):
+        section = next(section for section in SETPOINT_SECTIONS if section["key"] == key)
+        return all(name in self.variable_ids for name, *_ in section["fields"])
+
     def _update_controls_enabled(self):
         in_run_state = self._driver_state == FOCState.FOC_STATE_RUN
-        for button in self.mode_buttons.values():
-            button.setEnabled(self._connected and in_run_state)
+        for key, button in self.mode_buttons.items():
+            button.setEnabled(self._connected and in_run_state and self._mode_available(key))
         for var_id, value in self.value_widgets.items():
             active = (
                 self._connected
                 and in_run_state
+                and var_id in self.variable_ids
                 and self._active_mode == self.var_modes[var_id]
             )
             value.setEnabled(active)
@@ -215,6 +225,8 @@ class SetpointDock(QDockWidget):
         ):
             return
         section = next(item for item in SETPOINT_SECTIONS if item["key"] == mode)
+        if not self._mode_available(mode):
+            return
         self._active_mode = mode
         self._update_controls_enabled()
         self.on_command(
@@ -230,7 +242,7 @@ class SetpointDock(QDockWidget):
             self.on_command(
                 Packet(
                     msg_type=MsgType.MSG_GET_VAR,
-                    data=VarPayload(var_id=var_id, value=None),
+                    data=VarPayload(var_id=self.variable_ids[var_id], value=None),
                 )
             )
 
@@ -246,7 +258,7 @@ class SetpointDock(QDockWidget):
         section = next(
             (item for item in SETPOINT_SECTIONS if item["mode"] == mode), None
         )
-        if section is None:
+        if section is None or not self._mode_available(section["key"]):
             self._clear_active_mode()
             return
 
@@ -263,7 +275,7 @@ class SetpointDock(QDockWidget):
                 self.on_command(
                     Packet(
                         msg_type=MsgType.MSG_GET_VAR,
-                        data=VarPayload(var_id=var_id, value=None),
+                        data=VarPayload(var_id=self.variable_ids[var_id], value=None),
                     )
                 )
 
@@ -272,14 +284,16 @@ class SetpointDock(QDockWidget):
             return
         for section in SETPOINT_SECTIONS:
             for var_id, _label, _suffix, _step in section["fields"]:
+                if var_id not in self.variable_ids:
+                    continue
                 self.on_command(
                     Packet(
                         msg_type=MsgType.MSG_GET_VAR,
-                        data=VarPayload(var_id=var_id, value=None),
+                        data=VarPayload(var_id=self.variable_ids[var_id], value=None),
                     )
                 )
 
-    def _send_setpoint(self, var_id: int):
+    def _send_setpoint(self, var_id: str):
         if (
             not self._connected
             or self._driver_state != FOCState.FOC_STATE_RUN
@@ -290,14 +304,15 @@ class SetpointDock(QDockWidget):
             Packet(
                 msg_type=MsgType.MSG_SET_VAR,
                 data=VarPayload(
-                    var_id=var_id,
+                    var_id=self.variable_ids[var_id],
                     value=float(self.value_widgets[var_id].value()),
                 ),
             )
         )
 
     def set_var_value(self, var_id: int, value: int | float):
-        widget = self.value_widgets.get(var_id)
+        name = next((name for name, identifier in self.variable_ids.items() if identifier == var_id), None)
+        widget = self.value_widgets.get(name)
         if widget is None or widget.hasFocus():
             return
         widget.blockSignals(True)

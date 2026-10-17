@@ -65,6 +65,7 @@ class PlotPanel(QWidget):
         update_interval_ms: int = _UPDATE_INTERVAL_MS,
     ) -> None:
         super().__init__(parent)
+        self.sample_rate = SAMPLE_RATE
         if max_samples <= 0 or max_queued_payloads <= 0 or update_interval_ms <= 0:
             raise ValueError("buffer sizes and update interval must be positive")
         if SAMPLE_RATE <= 0:
@@ -209,7 +210,7 @@ class PlotPanel(QWidget):
         # relative time axis from the number of received samples instead.
         first_sample = self._samples_received
         self.time_buffer.extend(
-            (first_sample + sample_index) / SAMPLE_RATE
+            (first_sample + sample_index) / self.sample_rate
             for sample_index in range(payload.sample_count)
         )
         for name in self._signal_names:
@@ -258,11 +259,11 @@ class PlotPanel(QWidget):
     def _update_follow_range(self) -> None:
         if not self._auto_follow:
             return
-        end_time = self._samples_received / SAMPLE_RATE
+        end_time = self._samples_received / self.sample_rate
         window = self.window_seconds.value()
         start_time = max(0.0, end_time - window)
         if end_time <= start_time:
-            end_time = start_time + 1.0 / SAMPLE_RATE
+            end_time = start_time + 1.0 / self.sample_rate
         self.plot.setXRange(start_time, end_time, padding=0)
 
     def clear_data(self) -> None:

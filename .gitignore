@@ -1,3 +1,7 @@
 *.h5
 __pycache__/
 logs/
+.venv*/
+*.egg-info/
+build/
+dist/
