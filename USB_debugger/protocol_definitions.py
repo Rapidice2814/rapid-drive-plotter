@@ -43,10 +43,16 @@ FOC_USB_DEBUG_SIGNAL_LIST = [
     {"bit": 30, "type": "u32",   "name": "execution_time.loop_max"},
 
     {"bit": 31, "type": "f",     "name": "hfi.injection_phase"},
-    {"bit": 32, "type": "f",     "name": "hfi.i_alpha_l_raw"},
-    {"bit": 33, "type": "f",     "name": "hfi.i_beta_l_raw"},
-    {"bit": 34, "type": "f",     "name": "hfi.i_alpha_l_filtered"},
-    {"bit": 35, "type": "f",     "name": "hfi.i_beta_l_filtered"},
+    {"bit": 32, "type": "f",     "name": "hfi.id_hf"},
+    {"bit": 33, "type": "f",     "name": "hfi.iq_hf"},
+    {"bit": 34, "type": "f",     "name": "hfi.id_iq_filtered"},
+    {"bit": 35, "type": "f",     "name": "hfi.id_id_filtered"},
+    {"bit": 36, "type": "f",     "name": "hfi.angle_error"},
+    {"bit": 37, "type": "f",     "name": "hfi.angle"},
+    {"bit": 38, "type": "f",     "name": "hfi.speed"},
+    {"bit": 39, "type": "f",     "name": "hfi.encoder_angle_error"},
+    {"bit": 40, "type": "u32",   "name": "hfi.state"},
+    {"bit": 41, "type": "f",     "name": "hfi.injection_voltage"},
 ]
 
 FOC_PID_CONTROLLERS_LIST = [
@@ -72,10 +78,13 @@ VAR_ID_LIST = [
     {"id": 12, "type": "f", "name": "flash_data.motor.phase_resistance"},
     {"id": 13, "type": "f", "name": "flash_data.motor.phase_inductance"},
     {"id": 14, "type": "f", "name": "flash_data.motor.torque_constant"},
-    {"id": 15, "type": "u32", "name": "flash_data.hfi.hfi_enabled"},
+    {"id": 15, "type": "u32", "name": "flash_data.hfi.mode"},
     {"id": 16, "type": "f", "name": "flash_data.hfi.injection_amplitude"},
     {"id": 17, "type": "f", "name": "flash_data.hfi.injection_omega"},
-    {"id": 18, "type": "f", "name": "flash_data.controller.current_control_bandwidth"}
+    {"id": 18, "type": "f", "name": "flash_data.controller.current_control_bandwidth"},
+    {"id": 19, "type": "f", "name": "flash_data.hfi.PLL_gains.Kp"},
+    {"id": 20, "type": "f", "name": "flash_data.hfi.PLL_gains.Ki"},
+    {"id": 21, "type": "f", "name": "flash_data.hfi.polarity_current"},
 ]
 
 
@@ -146,6 +155,32 @@ CONTROL_MODE_LABELS = {
     ControlMode.CONTROL_MODE_POSITION: "Position",
     ControlMode.CONTROL_MODE_SPEED: "Speed",
 }
+
+
+class HFIMode(IntEnum):
+    """Values of flash_data.hfi.mode (var 15)."""
+
+    HFI_MODE_DISABLED = 0
+    HFI_MODE_OBSERVER = 1
+    HFI_MODE_SENSORLESS = 2
+
+
+HFI_MODE_LABELS = {
+    HFIMode.HFI_MODE_DISABLED: "Disabled",
+    HFIMode.HFI_MODE_OBSERVER: "Observer (encoder control)",
+    HFIMode.HFI_MODE_SENSORLESS: "Sensorless",
+}
+
+
+class HFIState(IntEnum):
+    """Values of the hfi.state log signal."""
+
+    HFI_STATE_RESET = 0
+    HFI_STATE_CONVERGING = 1
+    HFI_STATE_POLARITY_POSITIVE = 2
+    HFI_STATE_POLARITY_NEGATIVE = 3
+    HFI_STATE_LOCKED = 4
+    HFI_STATE_INVALID_CONFIG = 5
 
 
 class FOCError(IntFlag):

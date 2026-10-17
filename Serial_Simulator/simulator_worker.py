@@ -20,6 +20,8 @@ from config import (
 from USB_debugger.protocol_codec import ProtocolCodec, RawPacket
 from USB_debugger.protocol_definitions import (
     FOC_USB_DEBUG_SIGNAL_LIST,
+    HFIMode,
+    HFIState,
     SIGNAL_MASK_BYTES,
     VAR_ID_LIST,
     CONTROL_MODE_LABELS,
@@ -56,7 +58,8 @@ class SimulatorWorker:
         4: 20.0, 5: 48.0, 6: 58.0, 7: 20.0,
         8: 30.0, 9: 100.0, 10: 90.0, 11: 7,
         12: 0.05, 13: 0.00012, 14: 0.1, 15: 0,
-        16: 0.5, 17: 100.0, 18: 1000.0,
+        16: 0.2, 17: 2.0 * math.pi * 1000.0, 18: 1000.0,
+        19: 1000.0, 20: 25000.0, 21: 2.0,
     }
 
     def __init__(
@@ -103,6 +106,7 @@ class SimulatorWorker:
         }
         self._active_errors = 0
         self._latched_errors = 0
+        self._hfi_run_started_at: float | None = None
         self._command_rate_limit_seconds = max(
             0.0, float(COMMAND_RATE_LIMIT_SECONDS)
         )
@@ -559,10 +563,49 @@ class SimulatorWorker:
             "angle_setpoint": float(self._variables[2]),
             "speed_setpoint": float(self._variables[3]),
             "execution_time.loop_max": 120 + int(8 * abs(math.sin(phase))),
-            "hfi.injection_phase": angle % (2.0 * math.pi),
-            "hfi.i_alpha_l_raw": 0.2 * math.sin(phase * 2.0),
-            "hfi.i_beta_l_raw": 0.2 * math.cos(phase * 2.0),
-            "hfi.i_alpha_l_filtered": 0.15 * math.sin(phase * 2.0),
-            "hfi.i_beta_l_filtered": 0.15 * math.cos(phase * 2.0),
         }
+        values.update(self._hfi_sample_values(elapsed, values["encoder_angle_electrical"]))
         return values
+
+    def _hfi_sample_values(self, elapsed: float, electrical_angle: float) -> dict[str, int | float]:
+        """Fake HFI observer output: converges, runs the polarity pulses, then tracks the encoder."""
+        try:
+            mode = HFIMode(int(self._variables[15]))
+        except ValueError:
+            mode = HFIMode.HFI_MODE_DISABLED
+        if mode == HFIMode.HFI_MODE_DISABLED or self._state != int(FOCState.FOC_STATE_RUN):
+            self._hfi_run_started_at = None
+            return {"hfi.state": int(HFIState.HFI_STATE_RESET)}
+
+        if self._hfi_run_started_at is None:
+            self._hfi_run_started_at = elapsed
+        hfi_time = elapsed - self._hfi_run_started_at
+        if hfi_time < 0.2:
+            state = HFIState.HFI_STATE_CONVERGING
+        elif hfi_time < 0.25:
+            state = HFIState.HFI_STATE_POLARITY_POSITIVE
+        elif hfi_time < 0.3:
+            state = HFIState.HFI_STATE_POLARITY_NEGATIVE
+        else:
+            state = HFIState.HFI_STATE_LOCKED
+
+        error = 0.05 * math.sin(2.0 * math.pi * 3.0 * elapsed)
+        if state == HFIState.HFI_STATE_CONVERGING:
+            error += 1.5 * math.exp(-hfi_time / 0.04)
+        carrier_phase = (float(self._variables[17]) * elapsed) % (2.0 * math.pi)
+        carrier_current = float(self._variables[16]) / 0.15
+        id_hf = carrier_current * math.sin(carrier_phase)
+        iq_hf = 0.1 * error * id_hf
+        return {
+            "hfi.injection_phase": carrier_phase,
+            "hfi.id_hf": id_hf,
+            "hfi.iq_hf": iq_hf,
+            "hfi.id_iq_filtered": 0.05 * error * carrier_current ** 2,
+            "hfi.id_id_filtered": 0.5 * carrier_current ** 2,
+            "hfi.angle_error": 0.1 * error,
+            "hfi.angle": (electrical_angle + error) % (2.0 * math.pi),
+            "hfi.speed": 0.8 * int(self._variables[11]) + 0.5 * math.sin(elapsed),
+            "hfi.encoder_angle_error": error,
+            "hfi.state": int(state),
+            "hfi.injection_voltage": float(self._variables[16]) * math.cos(carrier_phase),
+        }
