@@ -86,6 +86,9 @@ VAR_ID_LIST = [
     {"id": 20, "type": "f", "name": "flash_data.hfi.PLL_gains.Ki"},
     {"id": 21, "type": "f", "name": "flash_data.hfi.polarity_current"},
     {"id": 22, "type": "f", "name": "flash_data.hfi.bias_current"},
+    {"id": 23, "type": "u32", "name": "flash_data.controller.current_PID_FF_enabled"},
+    {"id": 24, "type": "u32", "name": "flash_data.controller.anticogging_FF_enabled"},
+    {"id": 25, "type": "u32", "name": "flash_data.controller.anticogging_data_valid"},
 ]
 
 
