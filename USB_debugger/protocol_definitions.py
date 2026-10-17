@@ -6,7 +6,7 @@ SOF2_BIN = 0x55
 SIGNAL_MASK_BYTES = 8
 
 FOC_USB_DEBUG_SIGNAL_LIST = [
-    {"bit": 0,  "type": "u32",   "name": "timestamp"},
+    {"bit": 0,  "type": "u32",   "name": "tick"},
     {"bit": 1,  "type": "f",     "name": "adc_values.motor_temp"},
     {"bit": 2,  "type": "f",     "name": "adc_values.mosfet_temp"},
     {"bit": 3,  "type": "f",     "name": "adc_values.vbus"},
@@ -186,7 +186,7 @@ class HFIState(IntEnum):
 class FOCError(IntFlag):
     """Driver error bits shared with the firmware error flags."""
 
-    FOC_ERROR_INITIALIZING = 1 << 0
+    FOC_ERROR_ESTOP = 1 << 0
     FOC_ERROR_SYSTEM_FAULT = 1 << 1
     FOC_ERROR_TIMING_VIOLATION = 1 << 2
     FOC_ERROR_INVALID_CONFIGURATION = 1 << 3
@@ -206,7 +206,7 @@ class FOCError(IntFlag):
 # Keep user-facing descriptions alongside the bit definitions so the UI and
 # protocol mapping stay in sync when firmware names or bit locations change.
 FOC_ERROR_LABELS = {
-    FOCError.FOC_ERROR_INITIALIZING: "Initializing",
+    FOCError.FOC_ERROR_ESTOP: "E-stop",
     FOCError.FOC_ERROR_SYSTEM_FAULT: "System fault",
     FOCError.FOC_ERROR_TIMING_VIOLATION: "Timing violation",
     FOCError.FOC_ERROR_INVALID_CONFIGURATION: "Invalid configuration",

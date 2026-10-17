@@ -532,7 +532,7 @@ class SimulatorWorker:
         angle = 2.0 * math.pi * 0.8 * elapsed
         phase = angle + (timestamp / self.config.sample_rate) * 2.0 * math.pi * 3.0
         values: dict[str, int | float] = {
-            "timestamp": timestamp,
+            "tick": timestamp,
             "adc_values.motor_temp": 35.0 + 0.4 * math.sin(elapsed / 8.0),
             "adc_values.mosfet_temp": 31.0 + 0.3 * math.sin(elapsed / 6.0),
             "adc_values.vbus": 48.0 + 0.5 * math.sin(elapsed / 2.0),
