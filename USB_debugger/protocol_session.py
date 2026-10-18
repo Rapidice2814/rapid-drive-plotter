@@ -50,6 +50,7 @@ class ProtocolSession:
         self.requested_mask = None
         self.cache_hit = False
         self.phase = "disconnected"
+        self.info_attempts = 0
 
     def start(self, selected_names=None):
         with self.lock:
@@ -58,6 +59,7 @@ class ProtocolSession:
             self.active = self.initializing = True
             self.cache_hit = False
             self.phase = "info"
+            self.info_attempts = 1
             self._enqueue(Packet(MsgType.MSG_GET_DEVICE_INFO, None))
             self._pump()
 
@@ -119,7 +121,20 @@ class ProtocolSession:
     def tick(self):
         with self.lock:
             if self.active and self.pending is not None and self.clock() >= self.deadline:
-                self._fail("Device command timed out; check firmware compatibility and reconnect.")
+                command = MsgType(self.pending.msg_type_int)
+                if (self.initializing and self.phase == "info"
+                        and command == MsgType.MSG_GET_DEVICE_INFO and self.info_attempts < 3):
+                    # Only the read-only startup query is safe to repeat after
+                    # a reboot. Writes and runtime commands are never retried.
+                    self.info_attempts += 1
+                    self.deadline = self.clock() + 2.0
+                    self.transmit(self.codec.build_packet(self.pending))
+                    return
+                expected = REPLIES.get(command, MsgType.MSG_ACK)
+                attempts = f", {self.info_attempts} startup attempts" if self.initializing and self.phase == "info" else ""
+                self._fail(f"Timed out waiting for {expected.name} after {command.name} "
+                           f"(phase: {self.phase}{attempts}). "
+                           "The device may have restarted or disconnected; reconnect.")
 
     def _fail(self, message):
         self.stop()

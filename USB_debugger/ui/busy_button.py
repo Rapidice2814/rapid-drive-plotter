@@ -17,6 +17,7 @@ class BusyButton(QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._pending_count = 0
+        self._generation = 0
         self._normal_text = super().text()
         self._allowed = self.isEnabled()
         self._normal_cursor = self.cursor()
@@ -40,15 +41,20 @@ class BusyButton(QPushButton):
 
     def begin_busy(self):
         if not self.is_busy:
+            self._generation += 1
             self._normal_cursor = self.cursor()
         self._pending_count += 1
         self._update_busy()
+        return self._generation
 
-    def end_busy(self):
+    def end_busy(self, generation=None):
+        if generation is not None and generation != self._generation:
+            return
         self._pending_count = max(0, self._pending_count - 1)
         self._update_busy()
 
     def reset_busy(self):
+        self._generation += 1
         self._pending_count = 0
         self._update_busy()
 

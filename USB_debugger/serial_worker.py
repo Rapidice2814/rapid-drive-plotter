@@ -16,6 +16,7 @@ class SerialConfig:
     port: str
     baudrate: int = 115200
     timeout: float = 0.1
+    write_timeout: float = 1.0
 
 
 class SerialWorker:
@@ -38,6 +39,7 @@ class SerialWorker:
         self.ser: Optional[serial.Serial] = None
         self.rx_buffer = bytearray()
         self.stop_flag = False
+        self._disconnect_notified = False
         self._command_rate_limit_seconds = max(
             0.0, float(COMMAND_RATE_LIMIT_SECONDS)
         )
@@ -59,7 +61,10 @@ class SerialWorker:
             port=self.config.port,
             baudrate=self.config.baudrate,
             timeout=self.config.timeout,
+            write_timeout=self.config.write_timeout,
         )
+        self.ser.reset_input_buffer()
+        self.rx_buffer.clear()
         self._clear_command_queue()
 
     def close(self) -> None:
@@ -72,12 +77,24 @@ class SerialWorker:
 
     def stop(self) -> None:
         self.stop_flag = True
-        self.close()
+        # The worker owns closing the handle. Cancel outstanding I/O so its
+        # finally block can close before a replacement opens the same port.
+        port = self.ser
+        if port is not None:
+            for name in ("cancel_read", "cancel_write"):
+                cancel = getattr(port, name, None)
+                if cancel is not None:
+                    try:
+                        cancel()
+                    except (SerialException, OSError):
+                        pass
 
     def send_bytes(self, data: bytes) -> None:
         if self.ser is None or not self.ser.is_open:
             raise SerialException("Serial port is not open")
-        self.ser.write(data)
+        written = self.ser.write(data)
+        if written != len(data):
+            raise SerialException(f"Incomplete serial write: {written} of {len(data)} bytes")
 
     def _process_command_queue(self) -> None:
         if self._command_rate_limit_seconds > 0:
@@ -90,36 +107,26 @@ class SerialWorker:
             except queue.Empty:
                 return
 
-            try:
-                self.send_bytes(cmd)
-            except Exception as e:
-                if self.error_callback:
-                    self.error_callback(e)
-            finally:
-                self._next_command_at = (
-                    time.monotonic() + self._command_rate_limit_seconds
-                )
+            self.send_bytes(cmd)
+            self._next_command_at = time.monotonic() + self._command_rate_limit_seconds
             return
 
         # A zero interval deliberately preserves the original behavior.
-        while True:
+        while not self.stop_flag:
             try:
                 cmd = self.command_queue.get_nowait()
             except queue.Empty:
                 break
 
-            try:
-                self.send_bytes(cmd)
-            except Exception as e:
-                if self.error_callback:
-                    self.error_callback(e)
+            self.send_bytes(cmd)
 
     def _handle_buffer(self) -> None:
         if self.data_callback:
             self.data_callback(self.rx_buffer)
 
     def _notify_disconnect(self) -> None:
-        if self.disconnect_callback:
+        if not self._disconnect_notified and self.disconnect_callback:
+            self._disconnect_notified = True
             self.disconnect_callback()
 
     def _clear_command_queue(self) -> None:
@@ -132,6 +139,8 @@ class SerialWorker:
     def _run(self) -> None:
         try:
             self.open()
+            if self.stop_flag:
+                return
             # The port is open and stale queued commands are gone. Notify the
             # GUI-prepared initialization commands before processing traffic.
             if self.ready_callback is not None:
@@ -139,13 +148,10 @@ class SerialWorker:
 
             while not self.stop_flag:
                 self._process_command_queue()
-
-                try:
-                    data = self.ser.read(256) if self.ser is not None else b""
-                except (SerialException, OSError) as e:
-                    if self.error_callback:
-                        self.error_callback(e)
-                    self._notify_disconnect()
+                if self.stop_flag:
+                    break
+                data = self.ser.read(256) if self.ser is not None else b""
+                if self.stop_flag:
                     break
 
                 if data:
@@ -153,13 +159,14 @@ class SerialWorker:
                     self._handle_buffer()
                 else:
                     if self.ser is not None and not self.ser.is_open:
-                        self._notify_disconnect()
-                        break
+                        raise SerialException("Serial port closed unexpectedly")
                     time.sleep(0.001)
 
         except Exception as e:
-            if self.error_callback:
+            if not self.stop_flag and self.error_callback:
                 self.error_callback(e)
-            self._notify_disconnect()
         finally:
-            self.close()
+            try:
+                self.close()
+            finally:
+                self._notify_disconnect()

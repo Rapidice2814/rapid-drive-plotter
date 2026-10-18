@@ -77,23 +77,23 @@ class PlotWindow(QMainWindow):
     def _send_command(self, packet):
         button = BusyButton.current() if self._supports_completion else None
         if button is not None:
-            button.begin_busy()
+            generation = button.begin_busy()
         try:
             if button is None:
                 self._command_sender(packet)
             else:
                 self._command_sender(packet, completed=lambda success:
-                                     self.command_finished.emit((button, success)))
+                                     self.command_finished.emit((button, generation, success)))
         except (ValueError, TypeError, RuntimeError) as exc:
             if button is not None:
-                button.end_busy()
+                button.end_busy(generation)
             self.enqueue_text(f"Could not send {packet.msg_type.name}: {exc}")
 
     @Slot(object)
     def _handle_command_finished(self, result):
-        button, _success = result
+        button, generation, _success = result
         if isValid(button):
-            button.end_busy()
+            button.end_busy(generation)
 
     def _reset_busy_buttons(self):
         for button in self.findChildren(BusyButton):
