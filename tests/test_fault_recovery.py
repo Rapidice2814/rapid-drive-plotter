@@ -96,15 +96,15 @@ class FaultRecoveryTests(unittest.TestCase):
 
     def test_flash_save_load_and_clear_work_from_error(self):
         self.driver._operation_failed()
-        identifier = next(iter(self.driver._variables))
-        original = self.driver._variables[identifier]
-        self.driver._variables[identifier] = original + 1
+        identifier = next(iter(self.driver._configuration))
+        original = self.driver._configuration[identifier]
+        self.driver._configuration[identifier] = original + 1
         self.command(MsgType.MSG_FLASH_SAVE)
-        self.driver._variables[identifier] = original + 2
+        self.driver._configuration[identifier] = original + 2
         self.command(MsgType.MSG_FLASH_LOAD)
-        self.assertEqual(self.driver._variables[identifier], original + 1)
+        self.assertEqual(self.driver._configuration[identifier], original + 1)
         self.command(MsgType.MSG_FLASH_CLEAR)
-        self.assertEqual(self.driver._saved_variables, self.driver._default_variables)
+        self.assertEqual(self.driver._saved_configuration[identifier], original)
         self.assertEqual(self.driver._state, FOCState.FOC_STATE_ERROR)
 
     def test_bootloader_available_from_error_and_not_preempted_by_faults(self):

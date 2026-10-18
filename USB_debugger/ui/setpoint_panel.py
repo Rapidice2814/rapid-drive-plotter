@@ -1,4 +1,5 @@
 from ui.busy_button import BusyButton
+import struct
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -56,6 +57,7 @@ class SetpointDock(QDockWidget):
         super().__init__("Setpoints", parent)
         self.on_command = on_command
         self.variable_ids = {}
+        self.validated_api = False
         self._connected = False
         self._active_mode: str | None = None
         self._driver_state: FOCState | None = None
@@ -146,7 +148,20 @@ class SetpointDock(QDockWidget):
         self.variable_ids = {entry["name"]: entry["id"] for entry in entries if entry["type"] == "f"}
         self._clear_active_mode()
 
+    def set_validated_api(self, enabled):
+        self.validated_api = enabled
+        self._update_controls_enabled()
+
+    def set_target_values(self, payload):
+        values = struct.unpack("<ffff", payload)
+        for name, value in zip(("dq_current_setpoint.d", "dq_current_setpoint.q", "speed_setpoint", "angle_setpoint"), values):
+            widget = self.value_widgets.get(name)
+            if widget is not None and not widget.hasFocus():
+                widget.setValue(value)
+
     def _mode_available(self, key):
+        if self.validated_api:
+            return True
         section = next(section for section in SETPOINT_SECTIONS if section["key"] == key)
         return all(name in self.variable_ids for name, *_ in section["fields"])
 
@@ -157,12 +172,15 @@ class SetpointDock(QDockWidget):
         for var_id, value in self.value_widgets.items():
             active = (
                 self._connected
+                and self.validated_api
                 and in_run_state
-                and var_id in self.variable_ids
+                and (self.validated_api or var_id in self.variable_ids)
                 and self._active_mode == self.var_modes[var_id]
             )
             value.setEnabled(active)
             self.set_buttons[var_id].setEnabled(active)
+            self.set_buttons[var_id].setToolTip("Send a validated functional target." if self.validated_api else
+                                                "Validated targets require firmware USB protocol 8. Raw variable writes are debug-only.")
 
     def _clear_active_mode(self):
         self._active_mode = None
@@ -236,6 +254,9 @@ class SetpointDock(QDockWidget):
             )
         )
         self.on_command(Packet(msg_type=MsgType.MSG_GET_CONTROL_MODE, data=None))
+        if self.validated_api:
+            self.request_values()
+            return
         # The driver's mode transition may reset its setpoint values. Read the
         # active target(s) after queuing the mode command instead of assuming 0.
         for var_id, _label, _suffix, _step in section["fields"]:
@@ -271,6 +292,9 @@ class SetpointDock(QDockWidget):
         # A mode change may reset the driver's target. Read the newly active
         # setpoint(s) so the editor reflects the actual values, not stale ones.
         if mode_changed:
+            if self.validated_api:
+                self.request_values()
+                return
             for var_id, _label, _suffix, _step in section["fields"]:
                 self.on_command(
                     Packet(
@@ -281,6 +305,9 @@ class SetpointDock(QDockWidget):
 
     def request_values(self):
         if not self._connected:
+            return
+        if self.validated_api:
+            self.on_command(Packet(MsgType.MSG_GET_TARGETS, None))
             return
         for section in SETPOINT_SECTIONS:
             for var_id, _label, _suffix, _step in section["fields"]:
@@ -296,17 +323,17 @@ class SetpointDock(QDockWidget):
     def _send_setpoint(self, var_id: str):
         if (
             not self._connected
+            or not self.validated_api
             or self._driver_state != FOCState.FOC_STATE_RUN
             or self._active_mode != self.var_modes.get(var_id)
         ):
             return
         self.on_command(
             Packet(
-                msg_type=MsgType.MSG_SET_VAR,
-                data=VarPayload(
-                    var_id=self.variable_ids[var_id],
-                    value=float(self.value_widgets[var_id].value()),
-                ),
+                msg_type=MsgType.MSG_SET_TARGET,
+                data=struct.pack("<Bf", {"dq_current_setpoint.d": 0, "dq_current_setpoint.q": 1,
+                                        "speed_setpoint": 2, "angle_setpoint": 3}[var_id],
+                                 float(self.value_widgets[var_id].value())),
             )
         )
 

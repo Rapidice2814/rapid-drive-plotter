@@ -1,5 +1,11 @@
 {
-  "encoder_sources": [{"id": 0, "name": "AS5047P timer", "calibratable": true}],
+  "encoder_sources": [
+    {
+      "id": 0,
+      "name": "AS5047P timer",
+      "calibratable": true
+    }
+  ],
   "signals": [
     {
       "type": "u32",
@@ -146,103 +152,7 @@
       "name": "hfi.i_beta_l_filtered"
     }
   ],
-  "variables": [
-    {
-      "type": "f",
-      "name": "dq_current_setpoint.d",
-      "default": 0
-    },
-    {
-      "type": "f",
-      "name": "dq_current_setpoint.q",
-      "default": 0
-    },
-    {
-      "type": "f",
-      "name": "angle_setpoint",
-      "default": 0
-    },
-    {
-      "type": "f",
-      "name": "speed_setpoint",
-      "default": 0
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.max_dq_current",
-      "default": 20
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.max_dq_voltage",
-      "default": 48
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.vbus_overvoltage_trip_level",
-      "default": 58
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.vbus_undervoltage_trip_level",
-      "default": 20
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.ibus_overcurrent_trip_level",
-      "default": 30
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.motor_temp_trip_level",
-      "default": 100
-    },
-    {
-      "type": "f",
-      "name": "flash_data.limits.mosfet_temp_trip_level",
-      "default": 90
-    },
-    {
-      "type": "u32",
-      "name": "flash_data.motor.pole_pairs",
-      "default": 7
-    },
-    {
-      "type": "f",
-      "name": "flash_data.motor.phase_resistance",
-      "default": 0.05
-    },
-    {
-      "type": "f",
-      "name": "flash_data.motor.phase_inductance",
-      "default": 0.00012
-    },
-    {
-      "type": "f",
-      "name": "flash_data.motor.torque_constant",
-      "default": 0.1
-    },
-    {
-      "type": "u32",
-      "name": "flash_data.hfi.hfi_enabled",
-      "default": 0
-    },
-    {
-      "type": "f",
-      "name": "flash_data.hfi.injection_amplitude",
-      "default": 0.5
-    },
-    {
-      "type": "f",
-      "name": "flash_data.hfi.injection_omega",
-      "default": 100
-    },
-    {
-      "type": "f",
-      "name": "flash_data.controller.current_control_bandwidth",
-      "default": 1000
-    }
-  ],
+  "variables": [],
   "pids": [
     {
       "name": "pid_current_d",
@@ -275,6 +185,64 @@
         0.1,
         0
       ]
+    }
+  ],
+  "configuration": [
+    {"id":0,"group_id":0,"group":"Limits","type":"f","minimum":"0.001","maximum":"30","unit":"A","states":16896,"name":"limits.max_dq_current","label":"Maximum d/q current","default":5},
+    {"id":1,"group_id":0,"group":"Limits","type":"f","minimum":"0.001","maximum":"17.320509","unit":"V","states":16896,"name":"limits.max_dq_voltage","label":"Maximum d/q voltage","default":8},
+    {"id":2,"group_id":0,"group":"Limits","type":"f","minimum":"8","maximum":"30","unit":"V","states":16896,"name":"limits.vbus_overvoltage_trip_level","label":"Bus overvoltage trip","default":27},
+    {"id":3,"group_id":0,"group":"Limits","type":"f","minimum":"8","maximum":"30","unit":"V","states":16896,"name":"limits.vbus_undervoltage_trip_level","label":"Bus undervoltage trip","default":20},
+    {"id":4,"group_id":0,"group":"Limits","type":"f","minimum":"0.001","maximum":"30","unit":"A","states":16896,"name":"limits.ibus_overcurrent_trip_level","label":"Bus overcurrent trip","default":1},
+    {"id":5,"group_id":0,"group":"Limits","type":"f","minimum":"0","maximum":"60","unit":"degC","states":16896,"name":"limits.motor_temp_trip_level","label":"Motor temperature trip","default":60},
+    {"id":6,"group_id":0,"group":"Limits","type":"f","minimum":"0","maximum":"80","unit":"degC","states":16896,"name":"limits.mosfet_temp_trip_level","label":"MOSFET temperature trip","default":80},
+    {"id":7,"group_id":1,"group":"Motor","type":"u32","minimum":"1","maximum":"255","unit":"-","states":16384,"name":"motor.pole_pairs","label":"Pole pairs","default":11},
+    {"id":8,"group_id":1,"group":"Motor","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"motor.direction","label":"Reverse direction","default":0},
+    {"id":9,"group_id":1,"group":"Motor","type":"f","minimum":"0.000001","maximum":"1000","unit":"ohm","states":16384,"name":"motor.phase_resistance","label":"Phase resistance","default":0.2},
+    {"id":10,"group_id":1,"group":"Motor","type":"f","minimum":"0.000000001","maximum":"10","unit":"H","states":16384,"name":"motor.phase_inductance","label":"Phase inductance","default":0.000025},
+    {"id":11,"group_id":1,"group":"Motor","type":"f","minimum":"0.000001","maximum":"1000","unit":"Nm/A","states":16384,"name":"motor.torque_constant","label":"Torque constant","default":0.02},
+    {"id":12,"group_id":2,"group":"Controller","type":"f","minimum":"0.001","maximum":"5000","unit":"rad/s","states":16384,"name":"controller.current_control_bandwidth","label":"Current-control bandwidth","default":500},
+    {"id":13,"group_id":2,"group":"Controller","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"controller.current_PID_FF_enabled","label":"Current feed-forward","default":0},
+    {"id":14,"group_id":3,"group":"HFI","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"hfi.hfi_enabled","label":"Enable HFI injection","default":0},
+    {"id":15,"group_id":3,"group":"HFI","type":"f","minimum":"0","maximum":"17.320509","unit":"V","states":16384,"name":"hfi.injection_amplitude","label":"Injection amplitude","default":0.2},
+    {"id":16,"group_id":3,"group":"HFI","type":"f","minimum":"0.001","maximum":"20000","unit":"rad/s","states":16384,"name":"hfi.injection_omega","label":"Injection angular frequency","default":6283.185},
+    {"id":17,"group_id":4,"group":"Encoder","type":"f","minimum":"0.001","maximum":"17.320509","unit":"V","states":16384,"name":"encoder.calibration_voltage","label":"Calibration voltage","default":0.5}
+  ],
+  "can_cyclic": [
+    {
+      "id": 0,
+      "name": "Heartbeat"
+    },
+    {
+      "id": 1,
+      "name": "Encoder estimates"
+    },
+    {
+      "id": 2,
+      "name": "Bus voltage / current"
+    },
+    {
+      "id": 3,
+      "name": "Temperatures"
+    },
+    {
+      "id": 4,
+      "name": "Torque"
+    },
+    {
+      "id": 5,
+      "name": "Current"
+    },
+    {
+      "id": 6,
+      "name": "Speed"
+    },
+    {
+      "id": 7,
+      "name": "Position"
+    },
+    {
+      "id": 8,
+      "name": "Errors"
     }
   ]
 }

@@ -49,7 +49,8 @@ def main():
         metadata = {"sample_rate_hz": session.sample_rate,
                     "firmware_version": ".".join(map(str, session.firmware_version or ())) or "unknown"}
         if session.definitions is not None and session.info is not None:
-            metadata.update(definitions=json.dumps(session.definitions.as_dict()),
+            metadata.update(protocol_version=session.info.protocol,
+                            definitions=json.dumps(session.definitions.as_dict()),
                             signal_definitions=json.dumps(session.definitions.signals),
                             definitions_fingerprint=f"{session.info.fingerprint:016x}")
         return metadata

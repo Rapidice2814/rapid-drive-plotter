@@ -3,7 +3,8 @@ from enum import IntEnum, IntFlag
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 8
+SUPPORTED_PROTOCOL_VERSIONS = (6, 7, 8)
 
 
 class CommandErrorCode(IntEnum):
@@ -56,34 +57,6 @@ class FOCState(IntEnum):
     FOC_STATE_OPENLOOP = 19
     FOC_STATE_ENCODER_CALIBRATION = 20
     FOC_STATE_COUNT = 21
-
-
-class CanCyclicIndex(IntEnum):
-    """Cyclic CAN message identifiers shared with the driver protocol."""
-
-    CAN_CYCLIC_HEARTBEAT = 0
-    CAN_CYCLIC_ENCODER_ESTIMATES = 0x01
-    CAN_CYCLIC_BUS_VOLTAGE_CURRENT = 0x02
-    CAN_CYCLIC_TEMPERATURES = 0x03
-    CAN_CYCLIC_TORQUE = 0x04
-    CAN_CYCLIC_CURRENT = 0x05
-    CAN_CYCLIC_SPEED = 0x06
-    CAN_CYCLIC_POSITION = 0x07
-    CAN_CYCLIC_ERRORS = 0x08
-    CAN_CYCLIC_COUNT = 9
-
-
-CAN_CYCLIC_LABELS = {
-    CanCyclicIndex.CAN_CYCLIC_HEARTBEAT: "Heartbeat",
-    CanCyclicIndex.CAN_CYCLIC_ENCODER_ESTIMATES: "Encoder estimates",
-    CanCyclicIndex.CAN_CYCLIC_BUS_VOLTAGE_CURRENT: "Bus voltage / current",
-    CanCyclicIndex.CAN_CYCLIC_TEMPERATURES: "Temperatures",
-    CanCyclicIndex.CAN_CYCLIC_TORQUE: "Torque",
-    CanCyclicIndex.CAN_CYCLIC_CURRENT: "Current",
-    CanCyclicIndex.CAN_CYCLIC_SPEED: "Speed",
-    CanCyclicIndex.CAN_CYCLIC_POSITION: "Position",
-    CanCyclicIndex.CAN_CYCLIC_ERRORS: "Errors",
-}
 
 
 class ControlMode(IntEnum):
@@ -199,6 +172,12 @@ class MsgType(IntEnum):
     MSG_WRITE_CALIBRATION_TABLE = 0x33
     MSG_COMMIT_CALIBRATION_UPLOAD = 0x34
     MSG_ABORT_CALIBRATION_UPLOAD = 0x35
+    MSG_GET_CONFIGURATION = 0x36
+    MSG_CONFIGURATION_REPLY = 0x37
+    MSG_SET_CONFIGURATION = 0x38
+    MSG_SET_TARGET = 0x39
+    MSG_GET_TARGETS = 0x3A
+    MSG_TARGETS_REPLY = 0x3B
 
     MSG_UNKNOWN_TYPE = 0xFA
     MSG_INVALID_PAYLOAD = 0xFB

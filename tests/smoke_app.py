@@ -85,6 +85,6 @@ with tempfile.TemporaryDirectory() as directory:
         assert log.attrs["firmware_version"] == "1.0.0"
         assert len(log["log/tick"]) > 0
         import json
-        assert len(json.loads(log.attrs["definitions"])["variables"]) == 19
+        assert len(json.loads(log.attrs["definitions"])["variables"]) == 0
         assert len(log.attrs["definitions_fingerprint"]) == 16
     print("PASS: busy buttons, quiet replies, visible errors, connected telemetry, HDF5 metadata, and clean shutdown")

@@ -22,6 +22,13 @@ from Serial_Simulator.simulator_worker import SimulatorWorker, SimulatorConfig
 def fixture():
     return json.loads((ROOT / "Serial_Simulator/definitions.json").read_text())
 
+def debug_fixture():
+    """A separate development catalog for testing optional raw debug access."""
+    data = fixture()
+    data["variables"] = [{"name": "debug.test_value", "type": "f", "default": 1},
+                         {"name": "debug.test_counter", "type": "u32", "default": 2}]
+    return data
+
 def error_reply(command, code=CommandErrorCode.INVALID_STATE, message="Command rejected.",
                 response=MsgType.MSG_ERROR):
     return RawPacket(response, CommandErrorPayload(command, code, message).encode())
@@ -30,7 +37,7 @@ def error_reply(command, code=CommandErrorCode.INVALID_STATE, message="Command r
 def definitions_from(data):
     return Definitions(*[[dict(entry, **{"bit" if kind == 0 else "id": index})
                           for index, entry in enumerate(data[name])]
-                         for kind, name in enumerate(("signals", "variables", "pids"))]).validate()
+                         for kind, name in enumerate(("signals", "variables", "pids", "can_cyclic", "configuration"))]).validate()
 
 
 class Harness:
@@ -119,7 +126,7 @@ class CodecTests(unittest.TestCase):
                   MsgType.MSG_DEVICE_INFO_REPLY, MsgType.MSG_GET_DEFINITIONS,
                   MsgType.MSG_DEFINITIONS_REPLY, MsgType.MSG_DEFINITIONS_ERROR, MsgType.MSG_LOG_DATA]
         self.assertEqual(list(map(int, prefix)), list(range(7)))
-        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x36)))
+        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x3C)))
         self.assertEqual(int(MsgType.MSG_UNKNOWN_TYPE), 0xFA)
         self.assertEqual(int(MsgType.MSG_ERROR), 0xFF)
         self.assertFalse(hasattr(MsgType, "MSG_GET_VERSION"))
@@ -141,7 +148,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(commands[-3:], [MsgType.MSG_SET_MASK, MsgType.MSG_GET_MASK, MsgType.MSG_START_LOG])
         self.h.simulator._emit_log_packet()
         self.assertEqual(set(self.h.logs[-1].signals), {"tick", "adc_values.motor_temp"})
-        self.assertEqual(len(self.h.session.definitions.variables), 19)
+        self.assertEqual(len(self.h.session.definitions.variables), 0)
         self.assertEqual(len(self.h.session.definitions.pids), 4)
 
     def test_restart_uses_persisted_cache_and_names(self):
@@ -176,7 +183,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_reordered_ids_resolve_saved_names(self):
         self.h.start(["tick"])
-        data = fixture()
+        data = debug_fixture()
         data["signals"][0], data["signals"][8] = data["signals"][8], data["signals"][0]
         data["variables"].reverse()
         data["pids"].reverse()
@@ -242,7 +249,7 @@ class DiscoveryTests(unittest.TestCase):
         replies = []
         simulator = self.h.simulator
         simulator.data_callback = lambda buffer: replies.extend(simulator.codec.extract_packets(buffer))
-        for payload, code in ((struct.pack("<BH", 3, 0), 1), (struct.pack("<BH", 0, 999), 2)):
+        for payload, code in ((struct.pack("<BH", 5, 0), 1), (struct.pack("<BH", 0, 999), 2)):
             simulator._handle_packet(RawPacket(MsgType.MSG_GET_DEFINITIONS, payload))
             self.assertEqual(replies[-1].msg_type_int, MsgType.MSG_DEFINITIONS_ERROR)
             error = CommandErrorPayload.decode(replies[-1].payload_bytes)
@@ -267,7 +274,7 @@ class DiscoveryTests(unittest.TestCase):
         self.begin_manual()
         rows = b"".join(f"{index}\tu32\tduplicate\n".encode() for index in range(36))
         self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY, PAGE_HEADER.pack(0, 0, 36, 36) + rows))
-        for kind in (1, 2):
+        for kind in (1, 2, 3, 4):
             text = self.h.simulator.definitions.text(kind).encode()
             count = self.h.simulator.info.counts[kind]
             self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY, PAGE_HEADER.pack(kind, 0, count, count) + text))
@@ -429,17 +436,17 @@ class DefinitionValidationTests(unittest.TestCase):
                 data.validate()
 
     def test_fingerprint_tracks_order_names_and_types(self):
-        original = definitions_from(fixture())
+        original = definitions_from(debug_fixture())
         fingerprint = original.fingerprint()
         for mutate in (lambda data: data["signals"].reverse(),
                        lambda data: data["variables"][0].update(type="i32"),
                        lambda data: data["pids"][0].update(name="renamed")):
-            data = fixture()
+            data = debug_fixture()
             mutate(data)
             self.assertNotEqual(fingerprint, definitions_from(data).fingerprint())
 
     def test_same_name_across_lists_is_allowed(self):
-        data = fixture()
+        data = debug_fixture()
         data["variables"][0]["name"] = data["signals"][0]["name"]
         definitions_from(data).validate()
 
@@ -469,7 +476,18 @@ class FirmwareContractTests(unittest.TestCase):
                 entries.append(entry)
             actual.append(entries)
         expected = definitions_from(fixture())
-        self.assertEqual(Definitions(*actual).fingerprint(), expected.fingerprint())
+        can_header = (firmware / "Foc/FOC_Drivers/FOC_CAN.h").read_text()
+        can_block = re.search(r"#define FOC_CAN_CYCLIC_LIST\(X\)(.*?)(?:\n\s*\n)", can_header, re.S).group(1)
+        can_rows = re.findall(r'X\((CAN_CYCLIC_\w+),\s*"([^"]+)",\s*(CAN_\w+)\)', can_block)
+        actual.append([{"id": index, "name": name} for index, (_symbol, name, _reply) in enumerate(can_rows)])
+        self.assertEqual(Definitions(*actual).fingerprint(), Definitions(*expected.lists()[:4]).fingerprint())
+        config_header = (firmware / "Foc/FOC_Core/FOC_Configuration.h").read_text()
+        rows = re.findall(r'X\((\w+),(\w+),(\w+),([\w.]+),(\w+),(\w+),"([^"]+)",(\w+),"([^"]+)"\)', config_header)
+        self.assertEqual(len(rows), len(expected.configuration))
+        for row, entry in zip(rows, expected.configuration):
+            _symbol, group, value_type, name, _lo, _hi, unit, _states, label = row
+            self.assertEqual((name, value_type, unit, label, group.lower()),
+                             (entry["name"], entry["type"], entry["unit"], entry["label"], entry["group"].lower()))
         header = (firmware / "Foc/FOC_Core/FOC_USB_Debug.h").read_text()
         self.assertIn(f"#define DEBUG_PROTOCOL_VERSION {PROTOCOL_VERSION}", header)
         for name, value in re.findall(r"\b(MSG_\w+)\s*=\s*(0x[0-9A-Fa-f]+)", header):

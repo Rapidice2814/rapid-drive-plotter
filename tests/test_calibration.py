@@ -8,7 +8,7 @@ from unittest.mock import patch
 from test_protocol import Harness
 from test_dynamic_ui import HAS_GUI
 from calibration_protocol import CalibrationInfo, CalibrationTable, CHUNK
-from protocol_codec import Packet, RawPacket
+from protocol_codec import Packet, RawPacket, StatePayload, VarPayload, PIDPayload
 from protocol_definitions import MsgType, FOCState
 
 
@@ -217,6 +217,114 @@ class CalibrationUITests(unittest.TestCase):
         self.assertTrue(any(p.msg_type_int == MsgType.MSG_SET_STATE and p.payload_bytes == bytes((FOCState.FOC_STATE_FLASH_SAVE,)) for p in packets))
         self.assertNotEqual(self.h.simulator._state, FOCState.FOC_STATE_RUN)
 
+    def test_motor_setup_lists_individual_routines_but_not_current_sensors(self):
+        expected = {FOCState.FOC_STATE_ALIGNMENT, FOCState.FOC_STATE_ALIGNMENT_TEST,
+                    FOCState.FOC_STATE_IDENTIFY, FOCState.FOC_STATE_PID_AUTOTUNE}
+        self.assertEqual(set(self.dock.setup_buttons), expected)
+        self.assertEqual(self.dock.tabs.tabText(0), "Motor setup")
+        self.assertNotIn(FOCState.FOC_STATE_CURRENT_SENSOR_CALIBRATION, self.dock.setup_buttons)
+        self.assertNotIn(FOCState.FOC_STATE_CHECKLIST, self.dock.setup_buttons)
+
+    def test_motor_setup_requires_confirmation_and_ack_is_not_completion(self):
+        from PySide6.QtWidgets import QMessageBox
+        sent = []
+        callbacks = []
+        def send(packet, *, completed):
+            sent.append(packet)
+            callbacks.append(completed)
+        self.dock.send = send
+        self.dock.set_state(FOCState.FOC_STATE_IDLE)
+        self.dock.set_errors(active=0, latched=0)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+            self.dock.start_setup(FOCState.FOC_STATE_IDENTIFY)
+        self.assertFalse(sent)
+        for state in self.dock.setup_buttons:
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                self.dock.start_setup(state)
+            self.assertEqual(sent[-1], Packet(MsgType.MSG_SET_STATE, StatePayload(int(state))))
+            self.assertTrue(self.dock.setup_pending)
+            self.assertFalse(any(button.isEnabled() for button in self.dock.setup_buttons.values()))
+            self.assertTrue(self.dock.setup_stop.isEnabled())
+            callbacks[-1](True)
+            self.app.processEvents()
+            self.assertIn("not a completion", self.dock.setup_status.text())
+            self.assertTrue(self.dock.setup_pending)
+            self.dock.set_state(state)
+            self.assertIn("Routine running", self.dock.setup_status.text())
+            self.dock.set_state(FOCState.FOC_STATE_IDLE)
+            self.assertIn("does not confirm success", self.dock.setup_status.text())
+
+    def test_motor_setup_faults_transfers_rejections_and_stop(self):
+        from PySide6.QtWidgets import QMessageBox
+        button = self.dock.setup_buttons[FOCState.FOC_STATE_IDENTIFY]
+        self.dock.set_errors(active=1, latched=0)
+        self.assertFalse(button.isEnabled())
+        self.assertIn("faults are present", button.toolTip())
+        self.dock.set_errors(active=0)
+        self.assertTrue(button.isEnabled())
+        self.dock.transfer = {"mode": "read"}
+        self.dock._permissions()
+        self.assertFalse(button.isEnabled())
+        self.assertIn("transfer", button.toolTip())
+        self.dock.transfer = None
+        self.dock._permissions()
+        def reject(_packet, *, completed):
+            completed(False)
+        self.dock.send = reject
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.dock.start_setup(FOCState.FOC_STATE_IDENTIFY)
+        self.app.processEvents()
+        self.assertFalse(self.dock.setup_pending)
+        self.assertIn("rejected or failed", self.dock.setup_status.text())
+        self.assertTrue(button.isEnabled())
+        sent = []
+        self.dock.send = lambda packet, **_kwargs: sent.append(packet)
+        self.dock.set_state(FOCState.FOC_STATE_IDENTIFY)
+        self.dock.stop_setup()
+        self.assertEqual(sent[-1], Packet(MsgType.MSG_SET_STATE, StatePayload(int(FOCState.FOC_STATE_STOP))))
+        self.dock.set_connected(False)
+        self.assertFalse(self.dock.setup_stop.isEnabled())
+        self.assertFalse(button.isEnabled())
+
+    def test_motor_readback_uses_discovered_ids_and_updates_from_replies(self):
+        variables = [{"name": name, "id": 100 + i} for i, (name, _title, _unit) in enumerate(self.dock.RESULT_VARIABLES)]
+        pids = [{"name": "pid_current_q", "id": 72}, {"name": "pid_current_d", "id": 71}]
+        self.dock.set_definitions(variables, pids)
+        sent = []
+        self.dock.send = lambda packet, **_kwargs: sent.append(packet)
+        self.dock.read_setup_values()
+        self.assertEqual([p.data.var_id for p in sent if isinstance(p.data, VarPayload)], [100, 101, 102, 103])
+        self.assertEqual([p.data.controller_id for p in sent if isinstance(p.data, PIDPayload)], [71, 72])
+        self.window.on_reply(Packet(MsgType.MSG_VAR_REPLY, VarPayload(101, 0.25)))
+        self.window.on_reply(Packet(MsgType.MSG_PID_REPLY, PIDPayload(72, 1, 2, 0)))
+        self.assertIn("0.25 Ω", self.dock.variable_labels[variables[1]["name"]].text())
+        self.assertIn("Kp 1, Ki 2", self.dock.pid_labels["pid_current_q"].text())
+        # A short PI calculation may finish before the first state poll sees it.
+        sent.clear()
+        self.dock.setup_pending = True
+        self.dock.await_setup_state = True
+        self.dock.set_state(FOCState.FOC_STATE_IDLE)
+        self.assertFalse(self.dock.setup_pending)
+        self.assertEqual(len(sent), 6)
+        self.dock.set_definitions([], [])
+        self.assertFalse(self.dock.read_setup.isEnabled())
+        self.assertTrue(all("Not exposed" in label.text() for label in self.dock.variable_labels.values()))
+        self.assertFalse(self.dock.result_pids)
+
+    def test_motor_readback_uses_configuration_when_debug_catalog_is_empty(self):
+        definitions = self.h.session.definitions
+        self.assertEqual(definitions.variables, [])
+        self.dock.set_definitions([], definitions.pids, definitions.configuration)
+        self.dock.read_setup_values()
+        self.pump()
+        self.assertFalse(self.h.errors)
+        self.assertFalse(self.dock.result_variables)
+        self.assertEqual(len(self.dock.result_configurations), 4)
+        self.assertIn("0.2 Ω", self.dock.variable_labels["flash_data.motor.phase_resistance"].text())
+        self.assertIn("11", self.dock.variable_labels["flash_data.motor.pole_pairs"].text())
+        packets = [self.h.codec.extract_packets(bytearray(frame))[0] for frame in self.h.sent]
+        self.assertFalse(any(packet.msg_type_int == MsgType.MSG_GET_VAR for packet in packets))
+
     def test_disabled_calibration_controls_explain_the_blocker(self):
         toggle = self.dock.enabled[1]
         apply = self.dock.buttons[1][2]
@@ -241,7 +349,7 @@ class CalibrationUITests(unittest.TestCase):
         from PySide6.QtCore import QEvent, QPoint
         from PySide6.QtGui import QHelpEvent
         from PySide6.QtWidgets import QApplication, QToolTip
-        self.dock.tabs.setCurrentIndex(1)
+        self.dock.tabs.setCurrentWidget(self.dock.editors[1].parentWidget())
         self.app.processEvents()
         toggle = self.dock.enabled[1]
         self.dock.widget().ensureWidgetVisible(toggle)

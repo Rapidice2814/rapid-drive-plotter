@@ -15,7 +15,7 @@ if HAS_GUI:
     from plot_window import PlotWindow
     from protocol_definitions import MsgType, FOCState, PROTOCOL_VERSION
     from device_definitions import DeviceInfo
-    from test_protocol import fixture, definitions_from
+    from test_protocol import fixture, debug_fixture, definitions_from
 
 
 @unittest.skipUnless(HAS_GUI, "Install application dependencies to run Qt tests")
@@ -101,7 +101,7 @@ class DynamicUITests(unittest.TestCase):
         definitions = self.populate(data)
         self.assertEqual(len(self.window.signal_dock.signal_checkboxes), 36)
         self.assertEqual(len(self.window.pid_dock.pid_widgets), 4)
-        self.assertEqual(len(self.window.var_dock.var_widgets), 19)
+        self.assertEqual(len(self.window.var_dock.var_widgets), 0)
         self.assertEqual(self.window.signal_dock.mask_bytes, 5)
         self.assertFalse(self.window.signal_dock.read_mask_button.isEnabled())
         self.window._handle_transport_ready(7999.0)
@@ -109,22 +109,21 @@ class DynamicUITests(unittest.TestCase):
         dock.set_driver_state(FOCState.FOC_STATE_RUN)
         self.sent.clear()
         dock._activate_mode("speed")
-        reads = [packet.data.var_id for packet in self.sent if packet.msg_type == MsgType.MSG_GET_VAR]
-        speed_id = next(entry["id"] for entry in definitions.variables if entry["name"] == "speed_setpoint")
-        self.assertEqual(reads, [speed_id])
+        self.assertIn(MsgType.MSG_GET_TARGETS, [packet.msg_type for packet in self.sent])
         dock.value_widgets["speed_setpoint"].setValue(12.5)
         dock._send_setpoint("speed_setpoint")
-        self.assertEqual(self.sent[-1].data.var_id, speed_id)
-        self.assertEqual(self.sent[-1].data.value, 12.5)
+        import struct
+        self.assertEqual(self.sent[-1].msg_type, MsgType.MSG_SET_TARGET)
+        self.assertEqual(struct.unpack("<Bf", self.sent[-1].data), (2, 12.5))
 
-    def test_missing_setpoint_disables_only_its_mode(self):
+    def test_production_targets_do_not_depend_on_debug_variables(self):
         data = fixture()
         data["variables"] = [entry for entry in data["variables"] if entry["name"] != "speed_setpoint"]
         self.populate(data)
         self.window._handle_transport_ready(7999.0)
         dock = self.window.setpoint_dock
         dock.set_driver_state(FOCState.FOC_STATE_RUN)
-        self.assertFalse(dock.mode_buttons["speed"].isEnabled())
+        self.assertTrue(dock.mode_buttons["speed"].isEnabled())
         self.assertTrue(dock.mode_buttons["position"].isEnabled())
 
     def test_disconnect_discards_ids_but_keeps_selected_names(self):
@@ -137,7 +136,7 @@ class DynamicUITests(unittest.TestCase):
         self.assertEqual(self.window.signal_dock.saved_names, ["tick"])
 
     def prepare_busy_commands(self):
-        self.populate(fixture())
+        self.populate(debug_fixture())
         self.window._handle_transport_ready(7999.0)
         self.callbacks = []
 

@@ -14,17 +14,18 @@ python -m venv .venv
 ```
 
 The application package includes the simulator and requires no firmware source
-checkout. The application supports USB protocol version 6. It retains protocol
+checkout. The application supports USB protocol versions 6, 7 and 8. It retains protocol
 3 command IDs and successful reply layouts, but uses structured errors containing
 the originating command, numeric reason, and driver-provided explanation.
-Firmware and plotter must both support version 6. Firmware version polling uses
+CAN catalog discovery requires version 7; protocol-6 connections remain supported
+without guessed CAN cyclic entries. Firmware version polling uses
 device info; there are no separate USB version commands.
 
 ## Connection
 
-Basics/Encoder lists the driver's available angle sources, correction status and
+Calibration lists the driver's available angle sources, correction status and
 calibration progress. Source changes require stationary IDLE/ERROR and invalidate
-alignment and anti-cogging. `Calibrate encoder and save` requires aligned,
+alignment and anti-cogging. Encoder calibration requires aligned,
 fault-free IDLE and confirmation that the unloaded shaft can rotate. STOP cancels
 measurement; success saves settings and requires anti-cogging recalibration.
 Only implemented sources are listed; HFI estimation is not supplied by this feature.
@@ -32,7 +33,11 @@ The firmware's flash format 2 rejects older settings records rather than
 interpreting their old layout. Back up settings before a firmware upgrade.
 
 Connection setup reads device info, stops logging, and discovers the signals,
-variables, and PID controllers. Python contains no built-in lists for these.
+variables, PID controllers, and CAN cyclic messages (protocol 7). Python contains
+no built-in device catalogs for these.
+Protocol 8 also discovers configuration groups, field types, bounds, units and
+write-state permissions. This metadata is included in the persistent cache and
+fingerprint; changing a driver-side bound refreshes the generated controls.
 The controls are built from the discovered definitions, then the selected mask
 is set and read back before logging starts. Commands run one at a
 time with a two-second reply deadline. Rejected runtime commands are reported
@@ -60,11 +65,49 @@ The fault displays include the shared Operation failed flag (bit 15,
 Clearing latched faults returns ERROR to STOP only when active faults are also
 clear; a present fault immediately relatches. Recovery does not resume RUN.
 
+## Production configuration and debugging
+
+The Configuration tab generates grouped forms from the connected driver's
+metadata. Current groups are Limits, Motor, Controller, HFI injection, and Encoder
+calibration voltage. Read a group, edit one or more fields, then apply its edits
+to RAM. The firmware validates the complete candidate group and applies all edits
+or none; rejection retains the local edits and reports the error in the terminal.
+Successful writes are read back. Saving to flash remains a separate explicit
+action in Basics/Calibration. Configuration changes can invalidate calibration
+tables; changing pole pairs/direction also invalidates encoder alignment/correction.
+Current-control bandwidth changes do not automatically retune the current PI gains.
+
+Limits allow stationary IDLE/ERROR; other groups require stationary IDLE. Hover
+over disabled controls for an explanation. Absolute bounds are defined by
+`CONFIG_ABS_*` in the firmware's `FOC_Config.h`, not a Python settings catalog.
+Firmware checks state, finite/native values, physical bounds and related-field
+constraints. Advertised ranges do not guarantee controller tuning stability.
+
+Setpoints use dedicated validated target/readback commands on protocol 8 and do
+not write debug variables. Target writes require fault-free RUN and the matching
+control mode; d/q current magnitude must fit the configured current limit. PID
+updates retain their dedicated command with firmware-side gain/state validation.
+Existing node-ID, CAN rate, encoder, calibration and storage controls remain
+dedicated operations. Older firmware can connect, but validated configuration
+and target writes are unavailable; the plotter does not fall back to unsafe raw
+writes for normal target operation.
+
+Variables is a debug-only view. Raw writes bypass functional validation in
+development builds. Non-debug firmware disables MSG_SET_VAR and legacy text
+commands by default; it advertises this capability and the plotter disables the
+write controls. Debug reads and telemetry remain available. Production controls
+must not use the Variables panel as an alternate path around validation.
+The current driver exposes no debug-only variables; its former 19 entries are
+covered by Configuration and dedicated target commands. The Variables tab
+explains this empty state and remains available for future debug fields.
+Calibration parameter readbacks use discovered configuration fields, and
+Setpoints/target telemetry do not depend on debug-variable definitions.
+
 ## Recording
 
 HDF5 logs go to `%LOCALAPPDATA%\RapidDrive\logs` on Windows and the user data
 directory on other platforms. `RAPID_DRIVE_LOG_DIR` overrides this location. Files
-include protocol version, firmware version, sample rate, all three definition
+include the connected device's protocol version, firmware version, sample rate, all discovered definition
 lists, and their fingerprint.
 An active recording starts a new file on reconnect.
 
@@ -93,8 +136,26 @@ names, so fixture entries can be reordered without changing simulator code.
 
 ## Calibration tab
 
-The right-side Calibration tab contains encoder source selection and separate
-Encoder/Anti-cogging pages. Both routines support 1-8 revolutions per direction
+The right-side Calibration tab contains encoder source selection and Motor setup,
+Encoder and Anti-cogging pages. Motor setup provides individual encoder direction
+detection, encoder alignment, motor phase resistance/inductance measurement, and
+d/q current PI tuning. Current-sensor calibration remains part of firmware startup;
+there is no manual current-sensor calibration action on this tab. The startup
+checklist is not exposed as a calibration action because it can continue into RUN.
+
+Motor setup requires fault-free IDLE, no table transfer/upload, and explicit
+confirmation. Pole pairs must be configured before direction detection. Current
+PI tuning uses motor R/L and current-control bandwidth; it does not tune speed or
+position controllers. Motor parameters and current gains can be read in the same
+page using IDs resolved from the connected driver's definitions. Unsupported
+readbacks are marked as unavailable. Parameter editing remains in Variables/PID
+Controllers. These setup routines show the driver state, not percentage progress:
+an ACK only confirms acceptance, and STOP/IDLE alone does not prove success.
+Detailed routine results and errors appear in the terminal. Stop requests firmware
+STOP without entering RUN; it is not a hardware emergency stop. Setup changes
+remain in RAM until saved to flash.
+
+Encoder and anti-cogging routines support 1-8 revolutions per direction
 (default three), percentage/stage reporting and compensation enable/disable.
 Calibration rotates the unloaded motor; STOP cancels it.
 
@@ -147,8 +208,22 @@ disabled during maintenance; flash actions from ERROR return to ERROR while
 faults remain, rather than resuming RUN. The simulator supports the same
 ERROR-state permissions and preserves its active/latched fault masks.
 
-Firmware and plotter share a protocol version. Wire layout, discovery grammar,
-or primitive encoding changes require a new protocol version in both repositories.
+The plotter explicitly supports protocol 6 (three catalogs, no CAN discovery),
+protocol 7 (four catalogs), and protocol 8 (five catalogs and validated settings/
+targets). Protocol 7 adds a CAN cyclic count to device info and definition kind 3;
+protocol 8 adds configuration count/metadata and the debug-write capability.
+Unknown protocols are rejected. Wire layout, discovery
+grammar, or primitive encoding changes require explicit protocol support;
+firmware release/version numbers alone do not determine compatibility.
 Adding, removing, or reordering list entries changes the fingerprint and does
 not require a protocol bump. The firmware repository's `docs/usb-protocol.md`
 documents the discovery wire format.
+
+The CAN tab starts empty and is populated from the driver's CAN cyclic ID/name
+list. The same startup pagination, validation and on-disk fingerprint cache used
+for signals/variables/PIDs also covers this list. New entries, renames or ordering
+changes invalidate the cache and are discovered on reconnect without editing
+plotter source. The simulator's catalog lives in `Serial_Simulator/definitions.json`,
+not in production Python constants. Period tooltips use the reported driver tick
+rate; zero disables a cyclic message. A legacy driver or a driver advertising an
+empty CAN list shows an explanatory message while node-ID controls remain usable.

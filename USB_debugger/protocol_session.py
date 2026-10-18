@@ -8,9 +8,12 @@ import time
 from device_definitions import DeviceInfo, Definitions, DefinitionCache, SelectionStore, PAGE_HEADER, parse_rows
 from protocol_codec import Packet, CommandErrorPayload, EncoderInfoPayload
 from calibration_protocol import CalibrationInfo, CalibrationTable
+from configuration_protocol import decode_configuration
 from protocol_definitions import MsgType, ERROR_REPLY_TYPES
 
 REPLIES = {
+    MsgType.MSG_GET_CONFIGURATION: MsgType.MSG_CONFIGURATION_REPLY,
+    MsgType.MSG_GET_TARGETS: MsgType.MSG_TARGETS_REPLY,
     MsgType.MSG_GET_CALIBRATION_INFO: MsgType.MSG_CALIBRATION_INFO_REPLY,
     MsgType.MSG_GET_CALIBRATION_TABLE: MsgType.MSG_CALIBRATION_TABLE_REPLY,
     MsgType.MSG_GET_DEVICE_INFO: MsgType.MSG_DEVICE_INFO_REPLY,
@@ -159,8 +162,10 @@ class ProtocolSession:
         self._enqueue(Packet(MsgType.MSG_GET_DEFINITIONS, struct.pack("<BH", kind, start)))
 
     def _begin_discovery(self):
+        if self.info is None:
+            raise ValueError("Discovery requested before device info")
         self.phase = "discovery"
-        self.parts = [[], [], []]
+        self.parts = [[] for _ in self.info.counts]
         cached = self.cache.load(self.info)
         if cached is not None:
             self.cache_hit = True
@@ -187,7 +192,7 @@ class ProtocolSession:
             raise ValueError("Truncated definition page")
         kind, start, total, returned = PAGE_HEADER.unpack_from(raw.payload_bytes)
         wanted_kind, wanted_start = struct.unpack("<BH", self.pending.payload_bytes)
-        if (kind, start) != (wanted_kind, wanted_start) or total != self.info.counts[kind]:
+        if kind >= len(self.info.counts) or (kind, start) != (wanted_kind, wanted_start) or total != self.info.counts[kind]:
             raise ValueError("Definition page does not match request/device info")
         rows = parse_rows(kind, raw.payload_bytes[PAGE_HEADER.size:].decode("utf-8"))
         if len(rows) != returned or start + returned > total or (returned == 0 and total != 0):
@@ -198,7 +203,7 @@ class ProtocolSession:
         self.parts[kind].extend(rows)
         if start + returned < total:
             self._request_page(kind, start + returned)
-        elif kind < 2:
+        elif kind + 1 < len(self.info.counts):
             self._request_page(kind + 1, 0)
         else:
             definitions = Definitions(*self.parts).validate(self.info)
@@ -236,6 +241,12 @@ class ProtocolSession:
                            MsgType.MSG_NODE_ID_REPLY: 1, MsgType.MSG_ACTIVE_ERRORS_REPLY: 4,
                            MsgType.MSG_LATCHED_ERRORS_REPLY: 4, MsgType.MSG_CAN_CYCLIC_REPLY: 5,
                            MsgType.MSG_CONTROL_MODE_REPLY: 1}
+                if expected == MsgType.MSG_CONFIGURATION_REPLY:
+                    group, _values = decode_configuration(self.codec.configuration_list, raw.payload_bytes)
+                    if bytes((group,)) != self.pending.payload_bytes:
+                        raise ValueError("Configuration reply group mismatch")
+                if expected == MsgType.MSG_TARGETS_REPLY and len(raw.payload_bytes) != 16:
+                    raise ValueError("Malformed targets reply")
                 if expected == MsgType.MSG_ENCODER_INFO_REPLY:
                     EncoderInfoPayload.decode(raw.payload_bytes)
                 if expected == MsgType.MSG_CALIBRATION_INFO_REPLY:

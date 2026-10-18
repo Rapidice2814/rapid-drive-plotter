@@ -12,10 +12,10 @@ import threading
 import time
 import zlib
 from dataclasses import dataclass
+from USB_debugger.configuration_protocol import pack_value, unpack_value
 from typing import Callable, Optional
 
 from config import (
-    CAN_CYCLIC_RATE_OPTIONS,
     COMMAND_RATE_LIMIT_SECONDS,
     SIMULATOR_SAMPLES_PER_PACKET,
     SAMPLE_RATE,
@@ -74,11 +74,11 @@ class SimulatorWorker:
         self.config = config or SimulatorConfig()
         fixture = json.loads((self.config.definitions_path or Path(__file__).with_name("definitions.json")).read_text(encoding="utf-8"))
         lists = []
-        for kind, name in enumerate(("signals", "variables", "pids")):
+        for kind, name in enumerate(("signals", "variables", "pids", "can_cyclic", "configuration")):
             lists.append([dict(entry, **{"bit" if kind == 0 else "id": index})
                           for index, entry in enumerate(fixture[name])])
         self.definitions = Definitions(*lists).validate()
-        counts = (len(lists[0]), len(lists[1]), len(lists[2]))
+        counts = tuple(map(len, lists))
         self.info = DeviceInfo(PROTOCOL_VERSION, (1, 0, 0), counts,
                                (len(lists[0]) + 7) // 8, min(8, len(lists[0])),
                                int(self.config.sample_rate), 123, 1019, self.definitions.fingerprint())
@@ -107,7 +107,10 @@ class SimulatorWorker:
         self._pids = {entry["id"]: tuple(entry.get("default", (0.0, 0.0, 0.0))) for entry in self.definitions.pids}
         self._default_variables = {entry["id"]: entry.get("default", 0) for entry in self.definitions.variables}
         self._variables = dict(self._default_variables)
+        self._targets = {name: 0.0 for name in ("dq_current_setpoint.d", "dq_current_setpoint.q", "speed_setpoint", "angle_setpoint")}
         self._saved_variables = dict(self._variables)
+        self._configuration = {entry["id"]: entry.get("default", 0) for entry in self.definitions.configuration or []}
+        self._saved_configuration = dict(self._configuration)
         self._encoder_sources = tuple(EncoderSourceInfo(entry["id"], entry["name"], entry["calibratable"])
                                       for entry in fixture.get("encoder_sources", [{"id": 0, "name": "Simulator encoder", "calibratable": True}]))
         self._encoder_source = self._encoder_sources[0].source_id
@@ -123,10 +126,7 @@ class SimulatorWorker:
         self._saved_anti_flags = 0
         self._cal_upload = None
         self._can_node_id = 0
-        self._can_cyclic_rates = {
-            int(cyclic_type): 0
-            for cyclic_type, _label in CAN_CYCLIC_RATE_OPTIONS
-        }
+        self._can_cyclic_rates = {entry["id"]: 0 for entry in self.definitions.can_cyclic or []}
         self._active_errors = 0
         self._latched_errors = 0
         self._command_rate_limit_seconds = max(
@@ -230,6 +230,8 @@ class SimulatorWorker:
         self._check_errors()
         self._update_encoder_calibration()
         payload = raw_packet.payload_bytes
+        if self._configuration_command(msg_type, payload):
+            return
         if self._calibration_command(msg_type, payload):
             return
         if msg_type == MsgType.MSG_GET_DEVICE_INFO:
@@ -242,7 +244,7 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             kind, start = struct.unpack("<BH", payload)
-            if kind >= 3:
+            if kind >= len(self.definitions.lists()):
                 self._error(MsgType.MSG_DEFINITIONS_ERROR, msg_type,
                             CommandErrorCode.UNKNOWN_DEFINITION_LIST, f"Unknown definition list {kind}.")
                 return
@@ -315,11 +317,16 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             controller_id, kp, ki, kd = struct.unpack("<Bfff", payload)
+            if (self._state not in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_RUN) or self._cal_upload is not None
+                    or self._active_errors or self._latched_errors or any(not math.isfinite(v) or not 0 <= v <= 1000000 for v in (kp, ki, kd))):
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.OUT_OF_RANGE, "PID gains/state/faults prevent this update.")
+                return
             if controller_id not in self._pids:
                 self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
                             f"Unknown ID {payload[0]}.")
             else:
                 self._pids[controller_id] = (kp, ki, kd)
+                self._anti_flags = 0
                 self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_VAR:
             if len(payload) != 1:
@@ -327,6 +334,9 @@ class SimulatorWorker:
                 return
             self._reply_var(payload[0])
         elif msg_type == MsgType.MSG_SET_VAR:
+            if not self.info.debug_writes:
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Raw debug writes are disabled. Use validated commands.")
+                return
             if len(payload) != struct.calcsize("<BI"):
                 self._invalid_payload(msg_type)
                 return
@@ -337,8 +347,14 @@ class SimulatorWorker:
                             f"Unknown ID {payload[0]}.")
                 return
             self._variables[var_id] = ProtocolCodec.cast_u32_value(raw_value, meta["type"])
+            for entry in self.definitions.configuration or []:
+                if "flash_data." + entry["name"] == meta["name"]:
+                    self._configuration[entry["id"]] = self._variables[var_id]
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_TEXT_COMMAND:
+            if not self.info.debug_writes:
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Legacy debug text commands are disabled.")
+                return
             try:
                 text_command = payload.decode("utf-8").strip()
             except UnicodeDecodeError:
@@ -397,8 +413,7 @@ class SimulatorWorker:
                     previous_state == int(FOCState.FOC_STATE_RUN)
                     and self._state != int(FOCState.FOC_STATE_RUN)
                 ):
-                    for var_id in self._setpoint_ids():
-                        self._variables[var_id] = 0.0
+                    self._reset_targets()
                     self._control_mode = None
                 elif (
                     self._state == int(FOCState.FOC_STATE_RUN)
@@ -456,8 +471,7 @@ class SimulatorWorker:
                             f"Unsupported control mode {payload[0]}.")
                 return
             # The firmware resets the setpoints when changing control modes.
-            for var_id in self._setpoint_ids():
-                self._variables[var_id] = 0.0
+            self._reset_targets()
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_CONTROL_MODE:
             if payload:
@@ -555,16 +569,19 @@ class SimulatorWorker:
                         f"Operation requires IDLE or ERROR; current state is {FOCState(self._state).name}.")
             return
         if state == FOCState.FOC_STATE_FLASH_SAVE:
+            self._saved_configuration = dict(self._configuration)
             self._saved_variables = dict(self._variables)
             self._saved_encoder = (self._encoder_source, self._encoder_flags)
             self._saved_cal_tables = [list(table) for table in self._cal_tables]
             self._saved_anti_flags = self._anti_flags
         elif state == FOCState.FOC_STATE_FLASH_LOAD:
+            self._configuration = dict(self._saved_configuration)
             self._variables = dict(self._saved_variables)
             self._encoder_source, self._encoder_flags = self._saved_encoder
             self._cal_tables = [list(table) for table in self._saved_cal_tables]
             self._anti_flags = self._saved_anti_flags
         elif state == FOCState.FOC_STATE_FLASH_CLEAR:
+            self._saved_configuration = {e["id"]: e.get("default", 0) for e in self.definitions.configuration or []}
             # Clear stored contents; live values change only on LOAD.
             self._saved_variables = dict(self._default_variables)
             self._saved_encoder = (self._encoder_sources[0].source_id, 12)
@@ -589,8 +606,7 @@ class SimulatorWorker:
                 self._encoder_stage, self._encoder_error = 7, 7
             if previous == FOCState.FOC_STATE_ANTICOGGING:
                 self._anti_stage, self._anti_error = 7, 7
-            for var_id in self._setpoint_ids():
-                self._variables[var_id] = 0.0
+            self._reset_targets()
             self._control_mode = None
 
     def _update_encoder_calibration(self) -> None:
@@ -762,32 +778,139 @@ class SimulatorWorker:
             self._control_mode = modes[lowered]
             self._state = int(FOCState.FOC_STATE_RUN)
             # Match the firmware behavior when switching control modes.
-            for var_id in self._setpoint_ids():
-                self._variables[var_id] = 0.0
+            self._reset_targets()
             return f"Simulator control mode: {CONTROL_MODE_LABELS[self._control_mode]}"
 
         setpoint = re.fullmatch(r"(?i)(Sq|Sd|Ss|Sp)([-+]?(?:\d+(?:\.\d*)?|\.\d+))", command)
         if setpoint:
             name = {"sd": "dq_current_setpoint.d", "sq": "dq_current_setpoint.q", "sp": "angle_setpoint", "ss": "speed_setpoint"}[setpoint.group(1).lower()]
-            variable_id = self.variable_ids.get(name)
-            if variable_id is None:
-                return "Simulator variable is unavailable"
             value = float(setpoint.group(2))
-            self._variables[variable_id] = value
+            self._set_target_value(name, value)
             return f"Simulator {setpoint.group(1)} setpoint: {value:g}"
 
         return f"SIMULATOR: received: {command}"
 
-    def _setpoint_ids(self):
-        return [self.variable_ids[name] for name in
-                ("dq_current_setpoint.d", "dq_current_setpoint.q", "angle_setpoint", "speed_setpoint")
-                if name in self.variable_ids]
+    def _set_target_value(self, name, value):
+        """Functional targets have storage independent of optional debug aliases."""
+        self._targets[name] = value
+        identifier = self.variable_ids.get(name)
+        if identifier is not None:
+            self._variables[identifier] = value
+
+    def _reset_targets(self):
+        for name in self._targets:
+            self._set_target_value(name, 0.0)
 
     def _value(self, name):
-        return self._variables.get(self.variable_ids.get(name), 0)
+        identifier = self.variable_ids.get(name)
+        if identifier is not None:
+            return self._variables[identifier]
+        if name in self._targets:
+            return self._targets[name]
+        entry = next((e for e in self.definitions.configuration or [] if "flash_data." + e["name"] == name), None)
+        return self._configuration[entry["id"]] if entry is not None else 0
 
     def _var_meta(self, var_id: int) -> dict | None:
         return next((item for item in self.definitions.variables if int(item["id"]) == var_id), None)
+
+    def _configuration_command(self, command, payload):
+        """Model validated production operations independently from debug writes."""
+        commands = (MsgType.MSG_GET_CONFIGURATION, MsgType.MSG_SET_CONFIGURATION, MsgType.MSG_SET_TARGET, MsgType.MSG_GET_TARGETS)
+        if command not in commands:
+            return False
+        entries = self.definitions.configuration or []
+        by_id = {e["id"]: e for e in entries}
+        try:
+            if self.info.protocol < 8:
+                raise ValueError("Validated configuration requires protocol 8.")
+            if command == MsgType.MSG_GET_CONFIGURATION:
+                if len(payload) != 1:
+                    raise ValueError("Expected one configuration group.")
+                fields = [e for e in entries if e["group_id"] == payload[0]]
+                if not fields:
+                    raise ValueError("Unknown configuration group.")
+                data = bytes((payload[0], len(fields))) + b"".join(bytes((e["id"],)) + struct.pack(
+                    "<f" if e["type"] == "f" else "<i" if e["type"] == "i32" else "<I", self._configuration[e["id"]]) for e in fields)
+                self._reply(MsgType.MSG_CONFIGURATION_REPLY, data)
+                return True
+            if command == MsgType.MSG_GET_TARGETS:
+                if payload:
+                    raise ValueError("Target read has no payload.")
+                self._reply(MsgType.MSG_TARGETS_REPLY, struct.pack("<ffff", *(self._value(name) for name in
+                    ("dq_current_setpoint.d", "dq_current_setpoint.q", "speed_setpoint", "angle_setpoint"))))
+                return True
+            if self._cal_upload is not None:
+                raise ValueError("Abort unfinished calibration upload first.")
+            if command == MsgType.MSG_SET_CONFIGURATION:
+                if len(payload) < 7 or payload[1] > 48 or len(payload) != 2 + 5 * payload[1]:
+                    raise ValueError("Malformed configuration transaction.")
+                group = payload[0]
+                fields = [e for e in entries if e["group_id"] == group]
+                if not fields or any(not e["states"] & (1 << self._state) for e in fields):
+                    raise ValueError("Configuration group is not writable in the current state.")
+                candidate = dict(self._configuration)
+                changed = set()
+                for offset in range(2, len(payload), 5):
+                    identifier = payload[offset]
+                    entry = by_id.get(identifier)
+                    if entry is None or entry["group_id"] != group or identifier in changed:
+                        raise ValueError("Unknown, wrong-group, or duplicate configuration field.")
+                    changed.add(identifier)
+                    candidate[identifier] = unpack_value(entry, payload[offset + 1:offset + 5])
+                for entry in fields:
+                    pack_value(entry, candidate[entry["id"]])
+                names = {e["name"]: candidate[e["id"]] for e in entries}
+                if fields[0]["group"] == "Limits" and names["limits.vbus_undervoltage_trip_level"] >= names["limits.vbus_overvoltage_trip_level"]:
+                    raise ValueError("Undervoltage trip must be below overvoltage trip.")
+                if fields[0]["group"] == "Limits" and names["limits.max_dq_voltage"] > names["limits.vbus_undervoltage_trip_level"] / math.sqrt(3):
+                    raise ValueError("Voltage limit must fit undervoltage trip / sqrt(3).")
+                if fields[0]["group"] in ("Limits", "HFI", "Encoder"):
+                    voltage = names.get("limits.max_dq_voltage", math.inf)
+                    if names.get("hfi.injection_amplitude", 0) > voltage or names.get("encoder.calibration_voltage", 0) > voltage:
+                        raise ValueError("Injection/calibration voltage exceeds the voltage limit.")
+                if names.get("controller.current_PID_FF_enabled", 0) and fields[0]["group"] == "Controller":
+                    if names.get("motor.phase_resistance", 0) <= 0 or names.get("motor.phase_inductance", 0) <= 0:
+                        raise ValueError("Current feed-forward requires positive motor R/L.")
+                different = any(candidate[i] != self._configuration[i] for i in changed)
+                self._configuration = candidate
+                for entry in entries:
+                    identifier = self.variable_ids.get("flash_data." + entry["name"])
+                    if identifier is not None:
+                        self._variables[identifier] = candidate[entry["id"]]
+                if different:
+                    self._anti_flags = 0
+                    if any(by_id[i]["name"] in ("motor.direction", "motor.pole_pairs") for i in changed):
+                        self._encoder_flags &= ~7
+                self._ack(command)
+                return True
+            if len(payload) != 5:
+                raise ValueError("Expected target operation and float.")
+            target, value = struct.unpack("<Bf", payload)
+            if not math.isfinite(value) or target > 4:
+                raise ValueError("Invalid target operation or non-finite value.")
+            if self._state != FOCState.FOC_STATE_RUN or self._active_errors or self._latched_errors:
+                raise ValueError("Targets require fault-free RUN.")
+            expected = ControlMode.CONTROL_MODE_SPEED if target == 2 else ControlMode.CONTROL_MODE_POSITION if target == 3 else ControlMode.CONTROL_MODE_OPENLOOP
+            if self._control_mode != expected:
+                raise ValueError("Target does not match the active control mode.")
+            names = {e["name"]: self._configuration[e["id"]] for e in entries}
+            if target == 4:
+                kt = names.get("motor.torque_constant", 0)
+                if not math.isfinite(kt) or kt <= 0:
+                    raise ValueError("Invalid torque constant.")
+                target, value = 1, value / kt
+            name = ("dq_current_setpoint.d", "dq_current_setpoint.q", "speed_setpoint", "angle_setpoint")[target]
+            if target < 2:
+                other = self._value("dq_current_setpoint.q" if target == 0 else "dq_current_setpoint.d")
+                if math.hypot(value, other) > names.get("limits.max_dq_current", 0):
+                    raise ValueError("Current magnitude exceeds configured limit.")
+            elif abs(value) > (10000 if target == 2 else 1000000):
+                raise ValueError("Target exceeds absolute bounds.")
+            self._set_target_value(name, value)
+            self._ack(command)
+        except (ValueError, OverflowError, struct.error) as exc:
+            self._error(MsgType.MSG_ERROR, command, CommandErrorCode.OUT_OF_RANGE, str(exc))
+        return True
 
     def _reply_var(self, var_id: int) -> None:
         meta = self._var_meta(var_id)

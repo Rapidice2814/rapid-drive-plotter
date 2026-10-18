@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import CAN_CYCLIC_RATE_OPTIONS, SAMPLE_RATE
 from protocol_codec import CanCyclicRatePayload, CanCyclicTypePayload, NodeIdPayload, Packet
 from protocol_definitions import MsgType
 
@@ -74,52 +73,12 @@ class CanInterfaceDock(QDockWidget):
         layout.addWidget(node_group)
 
         rates_group = QGroupBox("CAN cyclic rates")
-        rates_form = QFormLayout(rates_group)
-        for cyclic_type, label in CAN_CYCLIC_RATE_OPTIONS:
-            cyclic_type = int(cyclic_type)
-            current_label = QLabel("Not read")
-            current_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            current_row = QWidget()
-            current_layout = QHBoxLayout(current_row)
-            current_layout.setContentsMargins(0, 0, 0, 0)
-            current_layout.addWidget(current_label)
-            current_layout.addStretch()
-            read_button = BusyButton("Read")
-            read_button.activated.connect(
-                lambda _checked=False, kind=cyclic_type: self.request_cyclic_rate(kind)
-            )
-            current_layout.addWidget(read_button)
-            rates_form.addRow(f"{label} - current", current_row)
-
-            rate_input = QDoubleSpinBox()
-            rate_input.setDecimals(0)
-            rate_input.setRange(0, 0xFFFFFFFF)
-            rate_input.setSingleStep(1)
-            rate_input.setSuffix(" cycles")
-            rate_input.setKeyboardTracking(False)
-            rate_input.setToolTip(
-                f"Rate is in cycles of the {SAMPLE_RATE:g} Hz sample clock. "
-                "0 disables this cyclic message."
-            )
-            set_button = BusyButton("Set rate")
-            set_button.activated.connect(
-                lambda _checked=False, kind=cyclic_type: self.set_cyclic_rate(kind)
-            )
-            rate_row = QWidget()
-            rate_layout = QHBoxLayout(rate_row)
-            rate_layout.setContentsMargins(0, 0, 0, 0)
-            rate_layout.addWidget(rate_input, 1)
-            rate_layout.addWidget(set_button)
-            rates_form.addRow(f"{label} - new", rate_row)
-
-            self.cyclic_rate_widgets[cyclic_type] = {
-                "label": current_label,
-                "input": rate_input,
-                "read_button": read_button,
-                "set_button": set_button,
-            }
+        self.rates_form = QFormLayout(rates_group)
+        self.rates_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.discovery_label = QLabel("Waiting for driver CAN definitions")
+        self.discovery_label.setWordWrap(True)
+        self.rates_form.addRow(self.discovery_label)
+        self.sample_rate = 0
         layout.addWidget(rates_group)
         layout.addStretch()
 
@@ -129,8 +88,88 @@ class CanInterfaceDock(QDockWidget):
         self.setWidget(scroll_area)
         self._update_controls_enabled()
 
+
+    def clear_definitions(self):
+        """Discard runtime IDs on disconnect; never reuse another driver's catalog."""
+        self.cyclic_rate_widgets.clear()
+        while self.rates_form.rowCount() > 1:
+            self.rates_form.removeRow(1)
+        self.sample_rate = 0
+        self.discovery_label.setText("Waiting for driver CAN definitions")
+
+    def set_definitions(self, entries, sample_rate):
+        """Build controls from the validated, fingerprinted startup definitions."""
+        self.clear_definitions()
+        self.sample_rate = sample_rate
+        if entries is None:
+            self.discovery_label.setText(
+                "This driver does not advertise CAN cyclic definitions (USB protocol 6). "
+                "Node ID controls remain available. Update firmware for cyclic-rate discovery.")
+        elif not entries:
+            self.discovery_label.setText("This driver advertises no CAN cyclic messages.")
+        else:
+            self.discovery_label.setText(
+                f"{len(entries)} cyclic messages discovered; sample clock {sample_rate:g} Hz. "
+                "0 cycles disables a message.")
+            for entry in entries:
+                self._add_cyclic_type(entry["id"], entry["name"])
+        self._update_controls_enabled()
+
+    def _add_cyclic_type(self, cyclic_type, label):
+        current_label = QLabel("Not read")
+        current_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        current_row = QWidget()
+        current_layout = QHBoxLayout(current_row)
+        current_layout.setContentsMargins(0, 0, 0, 0)
+        current_layout.addWidget(current_label)
+        current_layout.addStretch()
+        read_button = BusyButton("Read")
+        read_button.activated.connect(
+            lambda _checked=False, kind=cyclic_type: self.request_cyclic_rate(kind)
+        )
+        current_layout.addWidget(read_button)
+        current_title = QLabel(f"{label} - current")
+        current_title.setTextFormat(Qt.TextFormat.PlainText)
+        current_title.setWordWrap(True)
+        self.rates_form.addRow(current_title, current_row)
+
+        rate_input = QDoubleSpinBox()
+        rate_input.setDecimals(0)
+        rate_input.setRange(0, 0xFFFFFFFF)
+        rate_input.setSingleStep(1)
+        rate_input.setSuffix(" cycles")
+        rate_input.setKeyboardTracking(False)
+        rate_input.setToolTip(
+            f"Rate is in cycles of the driver's {self.sample_rate:g} Hz sample clock. "
+            "0 disables this cyclic message."
+        )
+        set_button = BusyButton("Set rate")
+        set_button.activated.connect(
+            lambda _checked=False, kind=cyclic_type: self.set_cyclic_rate(kind)
+        )
+        rate_row = QWidget()
+        rate_layout = QHBoxLayout(rate_row)
+        rate_layout.setContentsMargins(0, 0, 0, 0)
+        rate_layout.addWidget(rate_input, 1)
+        rate_layout.addWidget(set_button)
+        new_title = QLabel(f"{label} - new")
+        new_title.setTextFormat(Qt.TextFormat.PlainText)
+        new_title.setWordWrap(True)
+        self.rates_form.addRow(new_title, rate_row)
+
+        self.cyclic_rate_widgets[cyclic_type] = {
+            "label": current_label,
+            "input": rate_input,
+            "read_button": read_button,
+            "set_button": set_button,
+        }
+
+
     def begin_connection(self):
         self._connected = False
+        self.clear_definitions()
         self.node_id_label.setText("Waiting for reply")
         for widgets in self.cyclic_rate_widgets.values():
             widgets["label"].setText("Waiting for reply")
@@ -142,6 +181,7 @@ class CanInterfaceDock(QDockWidget):
 
     def set_disconnected(self):
         self._connected = False
+        self.clear_definitions()
         self.node_id_label.setText("Disconnected")
         for widgets in self.cyclic_rate_widgets.values():
             widgets["label"].setText("Disconnected")
@@ -164,8 +204,8 @@ class CanInterfaceDock(QDockWidget):
         if not self._connected:
             return
         self.request_node_id()
-        for cyclic_type, _label in CAN_CYCLIC_RATE_OPTIONS:
-            self.request_cyclic_rate(int(cyclic_type))
+        for cyclic_type in self.cyclic_rate_widgets:
+            self.request_cyclic_rate(cyclic_type)
 
     def request_node_id(self):
         self._send(MsgType.MSG_GET_NODE_ID)
@@ -184,6 +224,8 @@ class CanInterfaceDock(QDockWidget):
         self.node_id_input.setValue(node_id)
 
     def request_cyclic_rate(self, cyclic_type: int):
+        if cyclic_type not in self.cyclic_rate_widgets:
+            return
         self._send(
             MsgType.MSG_GET_CAN_CYCLIC_RATE,
             CanCyclicTypePayload(cyclic_type=cyclic_type),

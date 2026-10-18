@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QLineEdit,
     QScrollArea,
+    QLabel,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QValidator
@@ -46,6 +47,7 @@ class VarDock(QDockWidget):
         super().__init__("Variables", parent)
         self.on_command = on_command
         self._connected = False
+        self.debug_writes = True
         self._driver_state: FOCState | None = None
 
         self.setAllowedAreas(
@@ -68,6 +70,9 @@ class VarDock(QDockWidget):
     def _build_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        warning = QLabel("Debug access only: raw writes bypass functional validation. Use Configuration and Setpoints for normal operation.")
+        warning.setWordWrap(True)
+        layout.addWidget(warning)
 
         self.read_all_btn = BusyButton("Read Variables")
         self.read_all_btn.activated.connect(self._request_all_var_values)
@@ -78,6 +83,10 @@ class VarDock(QDockWidget):
 
         var_container = QWidget()
         var_layout = QVBoxLayout(var_container)
+        if not self.variables:
+            empty = QLabel("No debug-only variables are exposed by this driver. Settings are in Configuration; live targets are in Setpoints.")
+            empty.setWordWrap(True)
+            var_layout.addWidget(empty)
 
         for var in self.variables:
             var_id = int(var["id"])
@@ -155,14 +164,22 @@ class VarDock(QDockWidget):
         self._update_setpoint_controls_enabled()
 
     def _update_setpoint_controls_enabled(self):
+        self.read_all_btn.setEnabled(self._connected and bool(self.variables))
         setpoints_enabled = (
             self._connected and self._driver_state == FOCState.FOC_STATE_RUN
         )
         setpoint_names = {"dq_current_setpoint.d", "dq_current_setpoint.q", "angle_setpoint", "speed_setpoint"}
         for widgets in self.var_widgets.values():
+            permitted = self._connected and self.debug_writes
             if widgets["name"] in setpoint_names:
-                widgets["value"].setEnabled(setpoints_enabled)
-                widgets["send_btn"].setEnabled(setpoints_enabled)
+                permitted = permitted and setpoints_enabled
+            widgets["value"].setEnabled(permitted)
+            widgets["send_btn"].setEnabled(permitted)
+            widgets["send_btn"].setToolTip("Unsafe development-only raw write." if self.debug_writes else "Raw writes are disabled by production firmware.")
+
+    def set_debug_writes(self, enabled):
+        self.debug_writes = enabled
+        self._update_setpoint_controls_enabled()
 
     def _request_all_var_values(self):
         if not self._connected:
@@ -177,7 +194,7 @@ class VarDock(QDockWidget):
             )
 
     def _send_var_update(self, var_id: int):
-        if not self._connected:
+        if not self._connected or not self.debug_writes:
             return
         widgets = self.var_widgets.get(var_id)
         if widgets is None:

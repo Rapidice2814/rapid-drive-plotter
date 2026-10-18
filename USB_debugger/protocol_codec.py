@@ -222,6 +222,7 @@ class ProtocolCodec:
         self.signal_list = list(signal_list or [])
         self.variable_list = []
         self.pid_list = []
+        self.can_cyclic_list = []
         self.mask_bytes = (len(self.signal_list) + 7) // 8
         self.max_signals = len(self.signal_list)
         self.max_reply = 1019
@@ -237,12 +238,19 @@ class ProtocolCodec:
         self.sof1_bin = sof1_bin
         self.sof2_bin = sof2_bin
         self.running = False
+        self.configuration_list = []
+        self.protocol_version = 0
+        self.debug_writes = False
 
     def set_definitions(self, definitions, info) -> None:
         definitions.validate(info)
         self.signal_list = [dict(entry) for entry in definitions.signals]
         self.variable_list = [dict(entry) for entry in definitions.variables]
         self.pid_list = [dict(entry) for entry in definitions.pids]
+        self.can_cyclic_list = [dict(entry) for entry in definitions.can_cyclic or []]
+        self.configuration_list = [dict(entry) for entry in definitions.configuration or []]
+        self.protocol_version = info.protocol
+        self.debug_writes = info.debug_writes
         self.mask_bytes = info.mask_bytes
         self.max_signals = info.max_signals
         self.max_reply = info.max_reply
@@ -252,6 +260,10 @@ class ProtocolCodec:
         self.signal_list = []
         self.variable_list = []
         self.pid_list = []
+        self.can_cyclic_list = []
+        self.configuration_list = []
+        self.protocol_version = 0
+        self.debug_writes = False
         self.mask_bytes = 0
         self.max_signals = 0
         self.max_reply = 1019
@@ -383,6 +395,9 @@ class ProtocolCodec:
             except (ValueError, UnicodeError):
                 return Packet(msg_type_int, None)
 
+        if msg_type_int in (MsgType.MSG_CONFIGURATION_REPLY, MsgType.MSG_TARGETS_REPLY):
+            return Packet(MsgType(msg_type_int), raw_packet.payload_bytes)
+
         if msg_type_int in (MsgType.MSG_CALIBRATION_INFO_REPLY, MsgType.MSG_CALIBRATION_TABLE_REPLY):
             try:
                 value = (CalibrationInfo.decode(raw_packet.payload_bytes) if msg_type_int == MsgType.MSG_CALIBRATION_INFO_REPLY
@@ -447,6 +462,7 @@ class ProtocolCodec:
                 MsgType.MSG_CLEAR_LATCHED_ERRORS,
                 MsgType.MSG_GET_CONTROL_MODE,
                 MsgType.MSG_GET_ENCODER_INFO,
+                MsgType.MSG_GET_TARGETS,
             }
             if msg_type not in empty_payload_types:
                 raise ValueError(f"{msg_type.name} requires a payload")
@@ -563,10 +579,11 @@ class ProtocolCodec:
             return None
         return ControlModePayload(mode=mode)
 
-    @staticmethod
-    def _validate_can_cyclic_type(cyclic_type: int) -> None:
+    def _validate_can_cyclic_type(self, cyclic_type: int) -> None:
         if not 0 <= int(cyclic_type) <= 0xFF:
             raise ValueError("CAN cyclic type must fit in one byte")
+        if cyclic_type not in {entry["id"] for entry in self.can_cyclic_list}:
+            raise ValueError("CAN cyclic type is not advertised by this driver")
 
     @staticmethod
     def _decode_can_cyclic_rate_payload(payload: bytes) -> CanCyclicRatePayload | None:

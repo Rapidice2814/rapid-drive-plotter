@@ -34,6 +34,7 @@ class BasicsDock(QDockWidget):
         super().__init__("Basics", parent)
         self.on_command = on_command
         self.variable_ids = {}
+        self.validated_targets = False
         self._connected = False
         self._current_state: FOCState | None = None
         self._current_control_mode: ControlMode | None = None
@@ -435,6 +436,9 @@ class BasicsDock(QDockWidget):
             )
         )
         self.request_control_mode()
+        if self.validated_targets:
+            self._send(MsgType.MSG_GET_TARGETS)
+            return
         # Switching modes can reset the mode's setpoint. Refresh the matching
         # target fields so the Setpoints tab immediately reflects the driver.
         mode_variable_names = {

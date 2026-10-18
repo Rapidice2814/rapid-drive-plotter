@@ -6,10 +6,11 @@ from pathlib import Path
 import struct
 import tempfile
 
-from protocol_definitions import PROTOCOL_VERSION
+from protocol_definitions import SUPPORTED_PROTOCOL_VERSIONS
 
-KINDS = ("signals", "variables", "pids")
-INFO_LAYOUT = struct.Struct("<BBBBHHHBBIHHQB")
+KINDS = ("signals", "variables", "pids", "can_cyclic", "configuration")
+LEGACY_INFO_LAYOUT = struct.Struct("<BBBBHHHBBIHHQB")
+INFO_LAYOUT = struct.Struct("<BBBBHHHBBIHHQBH")
 PAGE_HEADER = struct.Struct("<BHHH")
 CACHE_FORMAT = 1
 
@@ -18,7 +19,7 @@ CACHE_FORMAT = 1
 class DeviceInfo:
     protocol: int
     firmware: tuple[int, int, int]
-    counts: tuple[int, int, int]
+    counts: tuple[int, ...]
     mask_bytes: int
     max_signals: int
     sample_rate: int
@@ -26,22 +27,32 @@ class DeviceInfo:
     max_reply: int
     fingerprint: int
     status: int = 0
+    debug_writes: bool = True
 
     @classmethod
     def decode(cls, payload):
-        if len(payload) != INFO_LAYOUT.size:
+        if not payload or payload[0] not in SUPPORTED_PROTOCOL_VERSIONS:
+            raise ValueError("Incompatible protocol; this plotter supports USB protocols 6, 7 and 8")
+        layout = LEGACY_INFO_LAYOUT if payload[0] == 6 else INFO_LAYOUT
+        if len(payload) != (34 if payload[0] >= 8 else layout.size):
             raise ValueError("Invalid device info length")
-        v = INFO_LAYOUT.unpack(payload)
-        info = cls(v[0], tuple(v[1:4]), tuple(v[4:7]), *v[7:])
+        v = layout.unpack(payload[:layout.size])
+        counts = tuple(v[4:7]) + ((v[-1],) if v[0] >= 7 else ())
+        info = cls(v[0], tuple(v[1:4]), counts, *(v[7:-1] if v[0] >= 7 else v[7:]))
+        if payload[0] >= 8:
+            from dataclasses import replace
+            if payload[33] > 1:
+                raise ValueError("Unknown device capabilities")
+            info = replace(info, counts=counts + (struct.unpack_from("<H", payload, 31)[0],), debug_writes=bool(payload[33]))
         info.validate()
         return info
 
     def validate(self):
-        if self.protocol != PROTOCOL_VERSION:
+        if self.protocol not in SUPPORTED_PROTOCOL_VERSIONS:
             raise ValueError("Incompatible protocol; install matching firmware and plotter")
         if self.status:
-            raise ValueError("Driver definitions are invalid (duplicate names)")
-        if not 1 <= self.counts[0] <= 256 or any(not 0 <= n <= 256 for n in self.counts):
+            raise ValueError("Driver definitions are invalid (invalid or duplicate names)")
+        if len(self.counts) != (3 if self.protocol == 6 else 4 if self.protocol == 7 else 5) or not 1 <= self.counts[0] <= 256 or any(not 0 <= n <= 256 for n in self.counts):
             raise ValueError("Invalid definition counts")
         if self.mask_bytes != (self.counts[0] + 7) // 8:
             raise ValueError("Invalid signal-mask width")
@@ -53,24 +64,31 @@ class DeviceInfo:
             raise ValueError("Invalid packet limits")
 
     def encode(self):
-        return INFO_LAYOUT.pack(self.protocol, *self.firmware, *self.counts,
+        base = LEGACY_INFO_LAYOUT.pack(self.protocol, *self.firmware, *self.counts[:3],
                                 self.mask_bytes, self.max_signals, self.sample_rate,
                                 self.max_command, self.max_reply, self.fingerprint, self.status)
+        return base + (struct.pack("<H", self.counts[3]) if self.protocol >= 7 else b"") + (struct.pack("<HB", self.counts[4], self.debug_writes) if self.protocol >= 8 else b"")
 
 
 def parse_rows(kind, text):
-    if kind not in range(3):
+    if kind not in range(len(KINDS)):
         raise ValueError("Unknown definition list")
     if text and not text.endswith("\n"):
         raise ValueError("Incomplete definition row")
     result = []
     for line in text.splitlines():
         fields = line.split("\t")
-        if len(fields) != (2 if kind == 2 else 3) or not fields[0].isascii() or not fields[0].isdecimal():
+        if kind == 4:
+            if len(fields) != 10:
+                raise ValueError("Malformed configuration descriptor")
+            result.append(dict(zip(("id", "group_id", "group", "type", "minimum", "maximum", "unit", "states", "name", "label"),
+                                   (int(fields[0]), int(fields[1]), *fields[2:7], int(fields[7]), *fields[8:]))))
+            continue
+        if len(fields) != (2 if kind >= 2 else 3) or not fields[0].isascii() or not fields[0].isdecimal():
             raise ValueError("Malformed definition row")
         identifier = int(fields[0])
         entry = {"bit" if kind == 0 else "id": identifier, "name": fields[-1]}
-        if kind != 2:
+        if kind < 2:
             entry["type"] = fields[1]
         result.append(entry)
     return result
@@ -81,9 +99,13 @@ class Definitions:
     signals: list[dict]
     variables: list[dict]
     pids: list[dict]
+    can_cyclic: list[dict] | None = None
+    configuration: list[dict] | None = None
 
     def lists(self):
-        return (self.signals, self.variables, self.pids)
+        base = (self.signals, self.variables, self.pids)
+        result = base if self.can_cyclic is None else base + (self.can_cyclic,)
+        return result if self.configuration is None else result + (self.configuration,)
 
     def validate(self, info=None):
         for kind, entries in enumerate(self.lists()):
@@ -97,13 +119,24 @@ class Definitions:
                 name = entry.get("name")
                 if not isinstance(name, str) or not name or len(name.encode("utf-8")) > 127:
                     raise ValueError("Invalid definition name")
-                if any(ord(char) < 33 or ord(char) > 126 for char in name):
+                if name != name.strip() or any(ord(char) < (32 if kind == 3 else 33) or ord(char) > 126 for char in name):
                     raise ValueError("Invalid characters in definition name")
                 if name in seen:
                     raise ValueError("Duplicate definition name: " + name)
                 seen.add(name)
-                if kind != 2 and entry.get("type") not in ("f", "i32", "u32"):
+                if kind < 2 and entry.get("type") not in ("f", "i32", "u32"):
                     raise ValueError("Unknown primitive type")
+                if kind == 4:
+                    from configuration_protocol import validate_descriptor
+                    validate_descriptor(entry)
+            if kind == 4:
+                groups = {}
+                for entry in entries:
+                    previous = groups.setdefault(entry["group_id"], entry["group"])
+                    if previous != entry["group"]:
+                        raise ValueError("Inconsistent configuration group names")
+                if len(set(groups.values())) != len(groups):
+                    raise ValueError("Duplicate configuration group names")
         if not self.signals:
             raise ValueError("Driver must expose at least one signal")
         if info is not None:
@@ -116,9 +149,13 @@ class Definitions:
     def text(self, kind):
         lines = []
         for entry in self.lists()[kind]:
+            if kind == 4:
+                lines.append("\t".join(str(entry[key]) for key in
+                    ("id", "group_id", "group", "type", "minimum", "maximum", "unit", "states", "name", "label")) + "\n")
+                continue
             identifier = entry["bit" if kind == 0 else "id"]
             fields = [str(identifier)]
-            if kind != 2:
+            if kind < 2:
                 fields.append(entry["type"])
             fields.append(entry["name"])
             lines.append("\t".join(fields) + "\n")
@@ -126,7 +163,7 @@ class Definitions:
 
     def fingerprint(self):
         value = 14695981039346656037
-        for kind, label in enumerate(KINDS):
+        for kind, label in enumerate(KINDS[:len(self.lists())]):
             for byte in (label + "\n" + self.text(kind)).encode("utf-8"):
                 value = ((value ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
         return value
