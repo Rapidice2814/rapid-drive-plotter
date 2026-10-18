@@ -2,11 +2,15 @@ from ui.busy_button import BusyButton
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
+    QMessageBox,
     QDockWidget,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -18,7 +22,8 @@ from config import (
     VERSION_POLL_INTERVAL_SECONDS,
     VERSION_REPLY_TIMEOUT_SECONDS,
 )
-from protocol_codec import ControlModePayload, Packet, StatePayload, VarPayload
+from protocol_codec import (ControlModePayload, Packet, StatePayload, VarPayload,
+                            EncoderInfoPayload, EncoderSourcePayload, EncoderCorrectionPayload)
 from protocol_definitions import CONTROL_MODE_LABELS, FOC_ERROR_LABELS, ControlMode, FOCState, MsgType
 
 
@@ -32,6 +37,8 @@ class BasicsDock(QDockWidget):
         self._connected = False
         self._current_state: FOCState | None = None
         self._current_control_mode: ControlMode | None = None
+        self._encoder_info: EncoderInfoPayload | None = None
+        self._calibration_transfer_busy = False
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -40,6 +47,7 @@ class BasicsDock(QDockWidget):
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         status_group = QGroupBox("Connection status")
         status_layout = QHBoxLayout(status_group)
@@ -178,25 +186,27 @@ class BasicsDock(QDockWidget):
         mode_select_layout.addWidget(self.set_control_mode_button)
         layout.addWidget(control_mode_group)
 
+        self._build_encoder_controls(layout)
+
         flash_group = QGroupBox("Flash storage")
         flash_layout = QVBoxLayout(flash_group)
         self.flash_save_button = BusyButton("Save settings to flash")
         self.flash_save_button.setToolTip(
-            "Send FLASH_SAVE. Available only while the driver is IDLE."
+            "Send FLASH_SAVE. Available in IDLE or ERROR; faults are not cleared."
         )
         self.flash_save_button.activated.connect(
             lambda: self._send(MsgType.MSG_FLASH_SAVE)
         )
         self.flash_load_button = BusyButton("Load settings from flash")
         self.flash_load_button.setToolTip(
-            "Send FLASH_LOAD. Available only while the driver is IDLE."
+            "Send FLASH_LOAD. Available in IDLE or ERROR; faults are not cleared."
         )
         self.flash_load_button.activated.connect(
             lambda: self._send(MsgType.MSG_FLASH_LOAD)
         )
         self.flash_clear_button = BusyButton("Clear settings from flash")
         self.flash_clear_button.setToolTip(
-            "Send FLASH_CLEAR. Available only while the driver is IDLE."
+            "Send FLASH_CLEAR. Available in IDLE or ERROR; faults are not cleared."
         )
         self.flash_clear_button.activated.connect(
             lambda: self._send(MsgType.MSG_FLASH_CLEAR)
@@ -210,7 +220,7 @@ class BasicsDock(QDockWidget):
         bootloader_layout = QVBoxLayout(bootloader_group)
         self.enter_bootloader_button = BusyButton("Enter bootloader")
         self.enter_bootloader_button.setToolTip(
-            "Available only while the driver is IDLE."
+            "Available in IDLE or ERROR. Motor outputs remain disabled."
         )
         self.enter_bootloader_button.activated.connect(
             lambda: self._send(MsgType.MSG_ENTER_BOOTLOADER)
@@ -218,7 +228,12 @@ class BasicsDock(QDockWidget):
         bootloader_layout.addWidget(self.enter_bootloader_button)
         layout.addWidget(bootloader_group)
         layout.addStretch()
-        self.setWidget(panel)
+        # Keep all controls inside the dock when its contents exceed its height.
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll_area.setWidget(panel)
+        self.setWidget(self.scroll_area)
 
         self.version_poll_timer = QTimer(self)
         self.version_poll_timer.setInterval(
@@ -231,6 +246,7 @@ class BasicsDock(QDockWidget):
             max(1, round(STATE_POLL_INTERVAL_SECONDS * 1000))
         )
         self.state_poll_timer.timeout.connect(self.request_state)
+        self.state_poll_timer.timeout.connect(self.request_encoder_info)
 
         self.error_poll_timer = QTimer(self)
         self._error_poll_interval_ms = max(
@@ -268,6 +284,7 @@ class BasicsDock(QDockWidget):
             self.on_command(Packet(msg_type=msg_type, data=None))
 
     def begin_connection(self):
+        self._clear_encoder_info()
         self.version_poll_timer.stop()
         self.state_poll_timer.stop()
         self.error_poll_timer.stop()
@@ -290,6 +307,7 @@ class BasicsDock(QDockWidget):
         self._set_command_buttons_enabled(True)
         self.request_version()
         self.request_state()
+        self.request_encoder_info()
         self.version_poll_timer.start()
         self.state_poll_timer.start()
         self.request_errors()
@@ -297,6 +315,7 @@ class BasicsDock(QDockWidget):
             self.error_poll_timer.start()
 
     def set_disconnected(self):
+        self._clear_encoder_info()
         self.version_poll_timer.stop()
         self.state_poll_timer.stop()
         self.error_poll_timer.stop()
@@ -326,7 +345,7 @@ class BasicsDock(QDockWidget):
         ):
             button.setEnabled(enabled)
 
-        can_flash = enabled and self._current_state == FOCState.FOC_STATE_IDLE
+        can_flash = enabled and self._current_state in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR)
         for button in (
             self.flash_save_button,
             self.flash_load_button,
@@ -338,6 +357,7 @@ class BasicsDock(QDockWidget):
         can_select_mode = enabled and self._current_state == FOCState.FOC_STATE_RUN
         self.control_mode_combo.setEnabled(can_select_mode)
         self.set_control_mode_button.setEnabled(can_select_mode)
+        self._refresh_encoder_controls()
 
     def request_errors(self):
         if self._connected:
@@ -461,6 +481,110 @@ class BasicsDock(QDockWidget):
     def request_state(self):
         self._send(MsgType.MSG_GET_STATE)
 
+    def request_encoder_info(self):
+        self._send(MsgType.MSG_GET_ENCODER_INFO)
+
+    def _build_encoder_controls(self, layout: QVBoxLayout):
+        group = QGroupBox("Encoder")
+        form = QFormLayout(group)
+        self.encoder_source_combo = QComboBox()
+        self.encoder_source_button = BusyButton("Apply source")
+        self.encoder_source_button.setToolTip("Stationary IDLE/ERROR only. A different source requires alignment and calibration again. Save settings to persist selection.")
+        self.encoder_source_button.activated.connect(self._apply_encoder_source)
+        form.addRow("Angle source", self.encoder_source_combo)
+        form.addRow(self.encoder_source_button)
+        self.encoder_correction_checkbox = QCheckBox("Use calibration table")
+        self.encoder_correction_button = BusyButton("Apply correction setting")
+        self.encoder_correction_button.activated.connect(self._apply_encoder_correction)
+        form.addRow(self.encoder_correction_checkbox)
+        form.addRow(self.encoder_correction_button)
+        self.encoder_status_label = QLabel("Waiting for encoder info")
+        self.encoder_status_label.setWordWrap(True)
+        form.addRow(self.encoder_status_label)
+        self.encoder_calibrate_button = BusyButton("Calibrate encoder and save")
+        self.encoder_calibrate_button.setToolTip("Rotates the unloaded motor in both directions, validates a correction table and saves settings. STOP cancels measurement.")
+        self.encoder_calibrate_button.activated.connect(self._start_encoder_calibration)
+        form.addRow(self.encoder_calibrate_button)
+        layout.addWidget(group)
+
+    def _clear_encoder_info(self):
+        self._encoder_info = None
+        self.encoder_source_combo.clear()
+        self.encoder_correction_checkbox.setChecked(False)
+        self.encoder_status_label.setText("Waiting for encoder info")
+
+    def _refresh_encoder_controls(self):
+        info = self._encoder_info
+        editable = self._connected and not self._calibration_transfer_busy and info is not None and self._current_state in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR)
+        self.encoder_source_combo.setEnabled(editable)
+        self.encoder_source_button.setEnabled(editable)
+        if not self._connected:
+            source_reason = "Not connected. Connect to the driver first."
+        elif info is None:
+            source_reason = "Waiting for encoder source information from the driver."
+        elif self._calibration_transfer_busy:
+            source_reason = "A calibration table transfer is in progress. Wait for it to finish before changing encoder source."
+        elif not editable:
+            source_reason = "Encoder source changes require stationary IDLE or ERROR. Stop the motor/calibration first."
+        else:
+            source_reason = "Select an encoder source and apply it. Changing source invalidates alignment, encoder correction and anti-cogging; save settings separately to persist it."
+        self.encoder_source_combo.setToolTip(source_reason)
+        self.encoder_source_button.setToolTip(source_reason)
+        can_correct = editable and info is not None and bool(info.flags & 1)
+        self.encoder_correction_checkbox.setEnabled(can_correct)
+        self.encoder_correction_button.setEnabled(can_correct)
+        calibratable = info is not None and any(source.source_id == info.selected and source.calibratable for source in info.sources)
+        self.encoder_calibrate_button.setEnabled(self._connected and self._current_state == FOCState.FOC_STATE_IDLE and
+            info is not None and info.flags & 12 == 12 and calibratable)
+
+    def set_encoder_info(self, info: EncoderInfoPayload):
+        if not self._connected:
+            return
+        previous = self._encoder_info
+        if previous is None or previous.sources != info.sources:
+            self.encoder_source_combo.clear()
+            for source in info.sources:
+                self.encoder_source_combo.addItem(source.name, source.source_id)
+        if previous is None or previous.sources != info.sources or previous.selected != info.selected:
+            self.encoder_source_combo.setCurrentIndex(self.encoder_source_combo.findData(info.selected))
+        if previous is None or bool(previous.flags & 2) != bool(info.flags & 2):
+            self.encoder_correction_checkbox.setChecked(bool(info.flags & 2))
+        self._encoder_info = info
+        stage_name = ("Not started", "Locking rotor", "Moving", "Measuring", "Validating",
+                      "Saving", "Complete", "Failed", "Cancelled")[info.stage]
+        self.encoder_status_label.setText(
+            f"{'Healthy' if info.flags & 8 else 'Unavailable'}; "
+            f"{'aligned' if info.flags & 4 else 'alignment required'}; "
+            f"{'valid table' if info.flags & 1 else 'no valid table'}.\n"
+            f"{stage_name}: {info.progress / 10:g}%" +
+            (f"; error {info.error}." if info.error else "."))
+        self._refresh_encoder_controls()
+
+    def _apply_encoder_source(self):
+        selected = self.encoder_source_combo.currentData()
+        if not self._connected or selected is None or not self.encoder_source_button.isEnabled():
+            return
+        self.on_command(Packet(MsgType.MSG_SET_ENCODER_SOURCE, EncoderSourcePayload(int(selected))))
+        self._send(MsgType.MSG_GET_ENCODER_INFO)
+
+    def _apply_encoder_correction(self):
+        if not self._connected or not self.encoder_correction_button.isEnabled():
+            return
+        self.on_command(Packet(MsgType.MSG_SET_ENCODER_CORRECTION,
+                               EncoderCorrectionPayload(self.encoder_correction_checkbox.isChecked())))
+        self._send(MsgType.MSG_GET_ENCODER_INFO)
+
+    def _start_encoder_calibration(self):
+        if not self._connected or not self.encoder_calibrate_button.isEnabled():
+            return
+        answer = QMessageBox.question(self, "Encoder calibration",
+            "The motor will rotate in both directions. Remove the load and keep the shaft clear. "
+            "A successful calibration saves all current settings and invalidates anti-cogging. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer == QMessageBox.StandardButton.Yes:
+            self._send_state(FOCState.FOC_STATE_ENCODER_CALIBRATION)
+            self.request_state()
+
     def _send_state(self, state: FOCState):
         if self._connected:
             self.on_command(
@@ -470,7 +594,10 @@ class BasicsDock(QDockWidget):
     def _send_selected_state(self):
         state_value = self.state_combo.currentData()
         if state_value is not None:
-            self._send_state(FOCState(int(state_value)))
+            if FOCState(int(state_value)) == FOCState.FOC_STATE_ENCODER_CALIBRATION:
+                self._start_encoder_calibration()
+            else:
+                self._send_state(FOCState(int(state_value)))
 
     def set_version(self, major: int, minor: int, patch: int):
         self.version_reply_timeout_timer.stop()

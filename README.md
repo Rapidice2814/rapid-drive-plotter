@@ -14,13 +14,22 @@ python -m venv .venv
 ```
 
 The application package includes the simulator and requires no firmware source
-checkout. The application supports USB protocol version 4. It retains protocol
+checkout. The application supports USB protocol version 6. It retains protocol
 3 command IDs and successful reply layouts, but uses structured errors containing
 the originating command, numeric reason, and driver-provided explanation.
-Firmware and plotter must both support version 4. Firmware version polling uses
+Firmware and plotter must both support version 6. Firmware version polling uses
 device info; there are no separate USB version commands.
 
 ## Connection
+
+Basics/Encoder lists the driver's available angle sources, correction status and
+calibration progress. Source changes require stationary IDLE/ERROR and invalidate
+alignment and anti-cogging. `Calibrate encoder and save` requires aligned,
+fault-free IDLE and confirmation that the unloaded shaft can rotate. STOP cancels
+measurement; success saves settings and requires anti-cogging recalibration.
+Only implemented sources are listed; HFI estimation is not supplied by this feature.
+The firmware's flash format 2 rejects older settings records rather than
+interpreting their old layout. Back up settings before a firmware upgrade.
 
 Connection setup reads device info, stops logging, and discovers the signals,
 variables, and PID controllers. Python contains no built-in lists for these.
@@ -82,6 +91,31 @@ The simulator loads its example definitions and defaults from
 `Serial_Simulator/definitions.json`. Its waveform and control behavior refer to
 names, so fixture entries can be reordered without changing simulator code.
 
+## Calibration tab
+
+The right-side Calibration tab contains encoder source selection and separate
+Encoder/Anti-cogging pages. Both routines support 1-8 revolutions per direction
+(default three), percentage/stage reporting and compensation enable/disable.
+Calibration rotates the unloaded motor; STOP cancels it.
+
+Read table downloads the accepted driver table. Plots show encoder correction
+in radians versus raw sensor angle, or forward/reverse anti-cogging compensation
+in amperes versus mechanical angle. Numeric cells are editable; selecting a cell
+or plotted point and dragging the yellow horizontal line edits that value. RMS
+and peak summarize table magnitudes, not independently measured residual errors.
+
+Apply edited table to RAM uploads acknowledged chunks with CRC validation.
+Successful uploads leave compensation disabled; activation is explicit. Encoder
+tables must preserve a monotonic periodic angle mapping; anti-cogging values are
+bounded by the driver's current limit. An interrupted anti-cogging upload leaves
+its in-place table invalid; Abort unfinished table upload releases an abandoned
+transfer after reconnect. Transfers require stationary IDLE/ERROR.
+
+Save all settings and tables to flash is separate from editing/uploading.
+Encoder measurement still saves all settings automatically on success;
+anti-cogging measurement does not. Encoder coordinate changes invalidate
+anti-cogging. Reconnect clears downloaded snapshots/local edits.
+
 ## Tests
 
 Regression tests from the repository root:
@@ -91,12 +125,27 @@ python -m unittest discover -s tests -v
 python tests/smoke_app.py
 ```
 
+Static type checking uses Pyright with the project's Python 3.10 baseline:
+
+```powershell
+python -m pip install -e ".[dev]"
+python -m pyright
+```
+
+Run the checker in the same Python environment as the application dependencies.
+
 The contract test compares the simulator fixture to the number-free C lists
 and checks message IDs and protocol version against a sibling `rapid-drive-foc` checkout.
 `RAPID_DRIVE_FIRMWARE` selects an alternative firmware checkout. The test is
 skipped when firmware source is unavailable.
 
 ## Protocol compatibility
+
+Flash save/load/clear and bootloader controls are available in IDLE or ERROR.
+These recovery actions do not acknowledge faults. Firmware keeps motor outputs
+disabled during maintenance; flash actions from ERROR return to ERROR while
+faults remain, rather than resuming RUN. The simulator supports the same
+ERROR-state permissions and preserves its active/latched fault masks.
 
 Firmware and plotter share a protocol version. Wire layout, discovery grammar,
 or primitive encoding changes require a new protocol version in both repositories.

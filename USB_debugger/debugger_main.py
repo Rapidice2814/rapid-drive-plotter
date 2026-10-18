@@ -48,7 +48,7 @@ def main():
     def recording_metadata():
         metadata = {"sample_rate_hz": session.sample_rate,
                     "firmware_version": ".".join(map(str, session.firmware_version or ())) or "unknown"}
-        if session.definitions is not None:
+        if session.definitions is not None and session.info is not None:
             metadata.update(definitions=json.dumps(session.definitions.as_dict()),
                             signal_definitions=json.dumps(session.definitions.signals),
                             definitions_fingerprint=f"{session.info.fingerprint:016x}")
@@ -108,7 +108,7 @@ def main():
                                   plot.definitions_received.emit((definitions, info, mask, plot.worker)))
     # Rejections, failures, and timeouts are delivered to the GUI thread.
     failures = queue.Queue()
-    session.failed_callback = failures.put
+    session.failed_callback = lambda message: failures.put(message)
     def poll_session():
         session.tick()
         while True:

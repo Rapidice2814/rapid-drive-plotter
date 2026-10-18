@@ -1,4 +1,4 @@
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
@@ -9,6 +9,7 @@ from protocol_codec import (
     ControlModePayload,
     CommandErrorPayload,
     ErrorFlagsPayload,
+    EncoderInfoPayload,
     LogPayload,
     MaskPayload,
     NodeIdPayload,
@@ -34,6 +35,18 @@ from ui.basics_panel import BasicsDock
 from ui.setpoint_panel import SetpointDock
 from ui.can_panel import CanInterfaceDock
 from ui.busy_button import BusyButton
+from ui.calibration_panel import CalibrationDock
+from ui.disabled_tooltips import DisabledTooltips
+from calibration_protocol import CalibrationInfo, CalibrationTable
+
+
+class CommandSender(Protocol):
+    def __call__(self, packet: Packet, *, completed: Callable[[bool], None] | None = None) -> None: ...
+
+
+def _discard_command(packet: Packet, *, completed: Callable[[bool], None] | None = None) -> None:
+    if completed is not None:
+        completed(False)
 
 
 class PlotWindow(QMainWindow):
@@ -48,7 +61,7 @@ class PlotWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self._command_sender = lambda _pkt: None
+        self._command_sender: CommandSender = _discard_command
         self._supports_completion = False
         self.on_command: Callable[[Packet], None] = self._send_command
         self.start_connection_callback: Callable[[str], None] | None = None
@@ -60,6 +73,7 @@ class PlotWindow(QMainWindow):
         self.resize(1400, 900)
 
         self._build_ui()
+        self._disabled_tooltips = DisabledTooltips(self)
         # Qt queues these calls when emitted from the serial worker thread.
         self.reply_received.connect(self.on_reply)
         self.serial_disconnected.connect(self._handle_serial_disconnected)
@@ -69,15 +83,19 @@ class PlotWindow(QMainWindow):
         self.connection_ready.connect(self._handle_connection_ready)
         self.command_finished.connect(self._handle_command_finished)
 
-    def set_command_sender(self, sender: Callable, *, supports_completion=False):
-        self._command_sender = sender
+    def set_command_sender(self, sender: Callable[..., None], *, supports_completion: bool = False):
+        if supports_completion:
+            self._command_sender = sender
+        else:
+            def send_without_completion(packet: Packet, *, completed: Callable[[bool], None] | None = None) -> None:
+                sender(packet)
+            self._command_sender = send_without_completion
         self._supports_completion = supports_completion
         self._refresh_command_targets()
 
-    def _send_command(self, packet):
+    def _send_command(self, packet: Packet):
         button = BusyButton.current() if self._supports_completion else None
-        if button is not None:
-            generation = button.begin_busy()
+        generation = button.begin_busy() if button is not None else None
         try:
             if button is None:
                 self._command_sender(packet)
@@ -171,6 +189,9 @@ class PlotWindow(QMainWindow):
 
         self.basics_dock = BasicsDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.basics_dock)
+        self.calibration_dock = CalibrationDock(self.basics_dock,
+            lambda packet, completed=None: self._command_sender(packet, completed=completed), self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.calibration_dock)
 
         self.setpoint_dock = SetpointDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.setpoint_dock)
@@ -185,6 +206,7 @@ class PlotWindow(QMainWindow):
         self.tabifyDockWidget(self.basics_dock, self.pid_dock)
         self.tabifyDockWidget(self.basics_dock, self.var_dock)
         self.tabifyDockWidget(self.basics_dock, self.can_dock)
+        self.tabifyDockWidget(self.basics_dock, self.calibration_dock)
         self.basics_dock.visibilityChanged.connect(self._on_basics_visibility_changed)
         self.pid_dock.visibilityChanged.connect(self._on_pid_visibility_changed)
         self.var_dock.visibilityChanged.connect(self._on_variables_visibility_changed)
@@ -230,6 +252,7 @@ class PlotWindow(QMainWindow):
         self.plot_panel.set_transport_connected(False)
         self.plot_panel.set_logging_active(False)
         self.basics_dock.set_disconnected()
+        self.calibration_dock.set_connected(False)
         self.pid_dock.set_disconnected()
         self.var_dock.set_disconnected()
         self.setpoint_dock.set_disconnected()
@@ -249,6 +272,7 @@ class PlotWindow(QMainWindow):
             self.plot_panel.set_transport_connected(False)
             self.plot_panel.set_logging_active(False)
             self.basics_dock.set_disconnected()
+            self.calibration_dock.set_connected(False)
             self.pid_dock.set_disconnected()
             self.var_dock.set_disconnected()
             self.setpoint_dock.set_disconnected()
@@ -278,6 +302,7 @@ class PlotWindow(QMainWindow):
         self.plot_panel.set_transport_connected(False)
         self.plot_panel.set_logging_active(False)
         self.basics_dock.set_disconnected()
+        self.calibration_dock.set_connected(False)
         self.pid_dock.set_disconnected()
         self.var_dock.set_disconnected()
         self.setpoint_dock.set_disconnected()
@@ -293,6 +318,7 @@ class PlotWindow(QMainWindow):
         # Connection initialization starts telemetry logging after the port is ready.
         self.plot_panel.set_logging_active(True)
         self.basics_dock.transport_ready()
+        self.calibration_dock.set_connected(True)
         self.pid_dock.transport_ready()
         self.var_dock.transport_ready()
         self.setpoint_dock.transport_ready()
@@ -369,6 +395,7 @@ class PlotWindow(QMainWindow):
             and isinstance(packet.data, StatePayload)
         ):
             self.basics_dock.set_state(packet.data.state)
+            self.calibration_dock.set_state(packet.data.state)
             self.pid_dock.set_driver_state(packet.data.state)
             self.var_dock.set_driver_state(packet.data.state)
             self.setpoint_dock.set_driver_state(packet.data.state)
@@ -384,6 +411,13 @@ class PlotWindow(QMainWindow):
                 packet.data.cyclic_type,
                 packet.data.rate_cycles,
             )
+
+        elif packet.msg_type == MsgType.MSG_CALIBRATION_INFO_REPLY and isinstance(packet.data, CalibrationInfo):
+            self.calibration_dock.on_info(packet.data)
+        elif packet.msg_type == MsgType.MSG_CALIBRATION_TABLE_REPLY and isinstance(packet.data, CalibrationTable):
+            self.calibration_dock.on_table(packet.data)
+        elif packet.msg_type == MsgType.MSG_ENCODER_INFO_REPLY and isinstance(packet.data, EncoderInfoPayload):
+            self.basics_dock.set_encoder_info(packet.data)
 
         elif packet.msg_type == MsgType.MSG_CONTROL_MODE_REPLY and isinstance(packet.data, ControlModePayload):
             self.basics_dock.set_control_mode(packet.data.mode)

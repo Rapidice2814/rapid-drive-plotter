@@ -45,8 +45,9 @@ class SignalSelectorDock(QDockWidget):
         self._connected = False
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
         self.signal_checkboxes.clear()
         self.signal_meta = []
         self.current_mask = bytearray()

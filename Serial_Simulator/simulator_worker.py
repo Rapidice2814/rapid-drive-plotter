@@ -10,6 +10,7 @@ import re
 import struct
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -19,7 +20,8 @@ from config import (
     SIMULATOR_SAMPLES_PER_PACKET,
     SAMPLE_RATE,
 )
-from USB_debugger.protocol_codec import ProtocolCodec, RawPacket, CommandErrorPayload
+from USB_debugger.protocol_codec import ProtocolCodec, RawPacket, CommandErrorPayload, EncoderInfoPayload, EncoderSourceInfo
+from USB_debugger.calibration_protocol import CalibrationInfo, CalibrationTable, CHUNK
 from USB_debugger.device_definitions import Definitions, DeviceInfo, PAGE_HEADER
 from USB_debugger.protocol_definitions import (
     PROTOCOL_VERSION,
@@ -31,6 +33,13 @@ from USB_debugger.protocol_definitions import (
     FOCError,
 )
 
+
+MAINTENANCE_STATES = {
+    FOCState.FOC_STATE_FLASH_SAVE: MsgType.MSG_FLASH_SAVE,
+    FOCState.FOC_STATE_FLASH_LOAD: MsgType.MSG_FLASH_LOAD,
+    FOCState.FOC_STATE_FLASH_CLEAR: MsgType.MSG_FLASH_CLEAR,
+    FOCState.FOC_STATE_BOOTLOADER: MsgType.MSG_ENTER_BOOTLOADER,
+}
 
 @dataclass(frozen=True)
 class SimulatorConfig:
@@ -69,7 +78,8 @@ class SimulatorWorker:
             lists.append([dict(entry, **{"bit" if kind == 0 else "id": index})
                           for index, entry in enumerate(fixture[name])])
         self.definitions = Definitions(*lists).validate()
-        self.info = DeviceInfo(PROTOCOL_VERSION, (1, 0, 0), tuple(map(len, lists)),
+        counts = (len(lists[0]), len(lists[1]), len(lists[2]))
+        self.info = DeviceInfo(PROTOCOL_VERSION, (1, 0, 0), counts,
                                (len(lists[0]) + 7) // 8, min(8, len(lists[0])),
                                int(self.config.sample_rate), 123, 1019, self.definitions.fingerprint())
         self.info.validate()
@@ -98,6 +108,20 @@ class SimulatorWorker:
         self._default_variables = {entry["id"]: entry.get("default", 0) for entry in self.definitions.variables}
         self._variables = dict(self._default_variables)
         self._saved_variables = dict(self._variables)
+        self._encoder_sources = tuple(EncoderSourceInfo(entry["id"], entry["name"], entry["calibratable"])
+                                      for entry in fixture.get("encoder_sources", [{"id": 0, "name": "Simulator encoder", "calibratable": True}]))
+        self._encoder_source = self._encoder_sources[0].source_id
+        self._encoder_flags = 12
+        self._encoder_stage = self._encoder_progress = self._encoder_error = 0
+        self._encoder_started = 0.0
+        self._saved_encoder = (self._encoder_source, self._encoder_flags)
+        self._cal_rounds = [3, 3]
+        self._cal_tables = [[0.0] * 128, [0.0] * 2000]
+        self._saved_cal_tables = [list(table) for table in self._cal_tables]
+        self._anti_flags = self._anti_stage = self._anti_progress = self._anti_error = 0
+        self._anti_started = 0.0
+        self._saved_anti_flags = 0
+        self._cal_upload = None
         self._can_node_id = 0
         self._can_cyclic_rates = {
             int(cyclic_type): 0
@@ -204,7 +228,10 @@ class SimulatorWorker:
             return
 
         self._check_errors()
+        self._update_encoder_calibration()
         payload = raw_packet.payload_bytes
+        if self._calibration_command(msg_type, payload):
+            return
         if msg_type == MsgType.MSG_GET_DEVICE_INFO:
             if payload:
                 self._invalid_payload(msg_type)
@@ -324,6 +351,9 @@ class SimulatorWorker:
             self._check_errors()
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_SET_STATE:
+            if self._cal_upload is not None and payload not in (bytes((FOCState.FOC_STATE_STOP,)), bytes((FOCState.FOC_STATE_ERROR,)), bytes((FOCState.FOC_STATE_IDLE,))):
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Abort unfinished table upload before changing state.")
+                return
             if len(payload) != 1:
                 self._invalid_payload(msg_type)
                 return
@@ -331,6 +361,9 @@ class SimulatorWorker:
                 state = FOCState(payload[0])
                 if state in (FOCState.FOC_STATE_NONE, FOCState.FOC_STATE_COUNT):
                     raise ValueError("Invalid runtime state")
+                if state in MAINTENANCE_STATES:
+                    self._execute_maintenance(state, msg_type)
+                    return
                 if state == FOCState.FOC_STATE_ERROR and not self._latched_errors:
                     self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
                                 "ERROR requires at least one latched fault.")
@@ -342,6 +375,22 @@ class SimulatorWorker:
                                 f"{'Active' if active else 'Latched'} faults prevent state changes: "
                                 f"0x{(self._active_errors if active else self._latched_errors):08X}.")
                     return
+                if state == FOCState.FOC_STATE_ENCODER_CALIBRATION:
+                    source = next(s for s in self._encoder_sources if s.source_id == self._encoder_source)
+                    if self._state != FOCState.FOC_STATE_IDLE or self._encoder_flags & 12 != 12 or not source.calibratable:
+                        self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
+                                    "Encoder calibration requires healthy aligned IDLE and a calibratable source.")
+                        return
+                    self._encoder_started = time.monotonic()
+                    self._encoder_stage, self._encoder_progress, self._encoder_error = 1, 0, 0
+                elif state == FOCState.FOC_STATE_RUN and not self._encoder_flags & 4:
+                    self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.ENCODER_NOT_ALIGNED,
+                                "Selected encoder source requires alignment.")
+                    return
+                elif self._state == FOCState.FOC_STATE_ENCODER_CALIBRATION:
+                    self._encoder_stage = 8
+                if self._state == FOCState.FOC_STATE_ANTICOGGING and state != self._state:
+                    self._anti_stage = 8
                 previous_state = self._state
                 self._state = int(state)
                 if (
@@ -360,6 +409,32 @@ class SimulatorWorker:
                 self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
                             f"Invalid runtime state {payload[0]}.")
                 return
+            self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_ENCODER_INFO:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(MsgType.MSG_ENCODER_INFO_REPLY, EncoderInfoPayload(
+                self._encoder_source, self._encoder_flags, self._encoder_stage,
+                self._encoder_error, self._encoder_progress, self._encoder_sources).encode())
+        elif msg_type in (MsgType.MSG_SET_ENCODER_SOURCE, MsgType.MSG_SET_ENCODER_CORRECTION):
+            if len(payload) != 1:
+                self._invalid_payload(msg_type)
+                return
+            if self._cal_upload is not None or self._state not in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR):
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Encoder changes require stationary IDLE/ERROR.")
+                return
+            if msg_type == MsgType.MSG_SET_ENCODER_SOURCE:
+                if not any(s.source_id == payload[0] for s in self._encoder_sources):
+                    self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID, "Encoder source is not available.")
+                    return
+                if self._encoder_source != payload[0]:
+                    self._encoder_source, self._encoder_flags = payload[0], 8
+            elif payload[0] > 1 or (payload[0] and not self._encoder_flags & 1):
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "A valid correction table is required.")
+                return
+            else:
+                self._encoder_flags = (self._encoder_flags & ~2) | (payload[0] << 1)
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_STATE:
             if payload:
@@ -460,65 +535,202 @@ class SimulatorWorker:
                 MsgType.MSG_CAN_CYCLIC_REPLY,
                 struct.pack("<BI", cyclic_type, self._can_cyclic_rates[cyclic_type]),
             )
-        elif msg_type == MsgType.MSG_FLASH_SAVE:
+        elif msg_type in MAINTENANCE_STATES.values():
             if payload:
                 self._invalid_payload(msg_type)
                 return
-            if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
-                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
-                return
-            self._saved_variables = dict(self._variables)
-            self._ack(msg_type)
-        elif msg_type == MsgType.MSG_FLASH_LOAD:
-            if payload:
-                self._invalid_payload(msg_type)
-                return
-            if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
-                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
-                return
-            self._variables = dict(self._saved_variables)
-            self._ack(msg_type)
-        elif msg_type == MsgType.MSG_FLASH_CLEAR:
-            if payload:
-                self._invalid_payload(msg_type)
-                return
-            if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
-                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
-                return
-            # Clearing flash restores its contents to factory defaults. Keep
-            # the current live values unchanged until a FLASH_LOAD is requested.
-            self._saved_variables = dict(self._default_variables)
-            self._ack(msg_type)
-        elif msg_type == MsgType.MSG_ENTER_BOOTLOADER:
-            if payload:
-                self._invalid_payload(msg_type)
-                return
-            if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
-                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
-                return
-            self._logging = False
-            self._state = int(FOCState.FOC_STATE_BOOTLOADER)
-            self._ack(msg_type)
+            state = next(state for state, command in MAINTENANCE_STATES.items() if command == msg_type)
+            self._execute_maintenance(state, msg_type)
         else:
             self._error(MsgType.MSG_UNKNOWN_TYPE, msg_type, CommandErrorCode.UNKNOWN_COMMAND,
                         "Unsupported request command.")
+
+    def _execute_maintenance(self, state: FOCState, command: MsgType) -> None:
+        """Permit recovery actions in IDLE/ERROR without clearing fault masks."""
+        if self._cal_upload is not None:
+            self._error(MsgType.MSG_ERROR, command, CommandErrorCode.INVALID_STATE, "Abort unfinished table upload before maintenance.")
+            return
+        if self._state not in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR):
+            self._error(MsgType.MSG_ERROR, command, CommandErrorCode.MUST_BE_IDLE,
+                        f"Operation requires IDLE or ERROR; current state is {FOCState(self._state).name}.")
+            return
+        if state == FOCState.FOC_STATE_FLASH_SAVE:
+            self._saved_variables = dict(self._variables)
+            self._saved_encoder = (self._encoder_source, self._encoder_flags)
+            self._saved_cal_tables = [list(table) for table in self._cal_tables]
+            self._saved_anti_flags = self._anti_flags
+        elif state == FOCState.FOC_STATE_FLASH_LOAD:
+            self._variables = dict(self._saved_variables)
+            self._encoder_source, self._encoder_flags = self._saved_encoder
+            self._cal_tables = [list(table) for table in self._saved_cal_tables]
+            self._anti_flags = self._saved_anti_flags
+        elif state == FOCState.FOC_STATE_FLASH_CLEAR:
+            # Clear stored contents; live values change only on LOAD.
+            self._saved_variables = dict(self._default_variables)
+            self._saved_encoder = (self._encoder_sources[0].source_id, 12)
+            self._saved_cal_tables = [[0.0] * 128, [0.0] * 2000]
+            self._saved_anti_flags = 0
+        else:
+            self._logging = False
+            self._control_mode = None
+            self._state = int(FOCState.FOC_STATE_BOOTLOADER)
+        self._ack(command)
 
     def _check_errors(self) -> None:
         """Latch simulated active inputs and recover ERROR to STOP after clear."""
         self._latched_errors |= self._active_errors
         previous = self._state
-        if self._latched_errors:
+        if self._latched_errors and self._state not in MAINTENANCE_STATES:
             self._state = int(FOCState.FOC_STATE_ERROR)
         elif self._state == int(FOCState.FOC_STATE_ERROR):
             self._state = int(FOCState.FOC_STATE_STOP)
         if self._state != previous:
+            if previous == FOCState.FOC_STATE_ENCODER_CALIBRATION:
+                self._encoder_stage, self._encoder_error = 7, 7
+            if previous == FOCState.FOC_STATE_ANTICOGGING:
+                self._anti_stage, self._anti_error = 7, 7
             for var_id in self._setpoint_ids():
                 self._variables[var_id] = 0.0
             self._control_mode = None
+
+    def _update_encoder_calibration(self) -> None:
+        """Simulate progress/persistence only, not motor or encoder physics."""
+        if self._state == FOCState.FOC_STATE_ANTICOGGING:
+            self._anti_progress = min(1000, max(0, int((time.monotonic() - self._anti_started) * 1000 / self._cal_rounds[1])))
+            self._anti_stage = 3
+            if self._anti_progress == 1000:
+                self._anti_flags = 1
+                self._anti_stage = 6
+                self._cal_tables[1] = [0.1 * math.sin(i // 2 * 2 * math.pi / 1000) + (0.01 if i % 2 else -0.01) for i in range(2000)]
+                self._state = int(FOCState.FOC_STATE_STOP)
+            return
+        if self._state != FOCState.FOC_STATE_ENCODER_CALIBRATION:
+            return
+        self._encoder_progress = min(1000, max(0, int((time.monotonic() - self._encoder_started) * 1000 / self._cal_rounds[0])))
+        self._encoder_stage = 3
+        if self._encoder_progress == 1000:
+            self._encoder_flags = 15
+            self._cal_tables[0] = [0.01 * math.sin(i * 2 * math.pi / 128) for i in range(128)]
+            self._anti_flags &= ~1
+            self._saved_cal_tables = [list(table) for table in self._cal_tables]
+            self._saved_encoder = (self._encoder_source, self._encoder_flags)
+            self._saved_variables = dict(self._variables)
+            self._encoder_stage = 6
+            self._state = int(FOCState.FOC_STATE_STOP)
+
+    def _calibration_command(self, command: MsgType, payload: bytes) -> bool:
+        """Mirror bounded chunk transfers, safe-state checks and CRC commit semantics."""
+        if not MsgType.MSG_GET_CALIBRATION_INFO <= command <= MsgType.MSG_ABORT_CALIBRATION_UPLOAD:
+            return False
+        try:
+            if command == MsgType.MSG_ABORT_CALIBRATION_UPLOAD:
+                if payload:
+                    raise ValueError("Abort expects no payload")
+                self._cal_upload = None
+                self._ack(command)
+                return True
+            if not payload or payload[0] > 1:
+                raise ValueError("Invalid calibration kind")
+            kind = payload[0]
+            total = len(self._cal_tables[kind])
+            if command == MsgType.MSG_GET_CALIBRATION_INFO:
+                if len(payload) != 1:
+                    raise ValueError("Info expects one byte")
+                flags = (self._encoder_flags & 3) if kind == 0 else self._anti_flags
+                active = self._state == (FOCState.FOC_STATE_ANTICOGGING if kind else FOCState.FOC_STATE_ENCODER_CALIBRATION)
+                info = CalibrationInfo(kind, flags | (4 if active else 0) | (8 if self._cal_upload is not None else 0),
+                                       self._anti_stage if kind else self._encoder_stage,
+                                       self._anti_error if kind else self._encoder_error,
+                                       self._anti_progress if kind else self._encoder_progress,
+                                       self._cal_rounds[kind], total // (kind + 1), kind + 1)
+                self._reply(MsgType.MSG_CALIBRATION_INFO_REPLY, info.encode())
+                return True
+            if self._state not in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR):
+                raise RuntimeError("Requires stationary IDLE/ERROR")
+            if command == MsgType.MSG_START_CALIBRATION:
+                if len(payload) != 2 or not 1 <= payload[1] <= 8:
+                    raise ValueError("Revolutions must be 1..8")
+                if self._state != FOCState.FOC_STATE_IDLE or self._cal_upload is not None or self._encoder_flags & 12 != 12 or self._active_errors or self._latched_errors:
+                    raise RuntimeError("Calibration requires healthy, aligned, fault-free IDLE and no upload")
+                self._cal_rounds[kind] = payload[1]
+                if kind:
+                    self._state = int(FOCState.FOC_STATE_ANTICOGGING)
+                    self._anti_started = time.monotonic()
+                    self._anti_flags = self._anti_progress = self._anti_error = 0
+                    self._anti_stage = 1
+                else:
+                    self._handle_packet(RawPacket(MsgType.MSG_SET_STATE, bytes((FOCState.FOC_STATE_ENCODER_CALIBRATION,))))
+                    return True
+            elif command == MsgType.MSG_ENABLE_CALIBRATION:
+                if len(payload) != 2 or payload[1] > 1:
+                    raise ValueError("Enable expects a boolean")
+                if self._cal_upload is not None or (payload[1] and not ((self._encoder_flags if kind == 0 else self._anti_flags) & 1)):
+                    raise RuntimeError("Valid table required; no upload may be active")
+                if kind:
+                    self._anti_flags = (self._anti_flags & ~2) | (payload[1] << 1)
+                else:
+                    self._encoder_flags = (self._encoder_flags & ~2) | (payload[1] << 1)
+                    self._anti_flags &= ~1
+            elif command == MsgType.MSG_GET_CALIBRATION_TABLE:
+                if len(payload) != 4:
+                    raise ValueError("Invalid table request")
+                _, offset, count = struct.unpack("<BHB", payload)
+                if not 1 <= count <= CHUNK or offset + count > total:
+                    raise ValueError("Invalid table range")
+                if self._cal_upload is not None:
+                    raise RuntimeError("Upload in progress")
+                self._reply(MsgType.MSG_CALIBRATION_TABLE_REPLY, CalibrationTable(kind, offset, total, tuple(self._cal_tables[kind][offset:offset + count])).encode())
+                return True
+            elif command == MsgType.MSG_BEGIN_CALIBRATION_UPLOAD:
+                if len(payload) != 3 or struct.unpack_from("<H", payload, 1)[0] != total:
+                    raise ValueError("Table size mismatch")
+                if self._cal_upload is not None:
+                    raise RuntimeError("Abort previous upload first")
+                self._cal_upload = {"kind": kind, "source": self._encoder_source, "data": bytearray()}
+                if kind:
+                    self._anti_flags = 0
+            elif command == MsgType.MSG_WRITE_CALIBRATION_TABLE:
+                if len(payload) < 4:
+                    raise ValueError("Truncated table chunk")
+                _, offset, count = struct.unpack_from("<BHB", payload)
+                if not 1 <= count <= CHUNK or len(payload) != 4 + 4 * count or offset + count > total:
+                    raise ValueError("Invalid table range")
+                upload = self._cal_upload
+                if upload is None or upload["kind"] != kind or upload["source"] != self._encoder_source or len(upload["data"]) != offset * 4:
+                    raise RuntimeError("No matching ordered upload")
+                values = struct.unpack_from(f"<{count}f", payload, 4)
+                limit = 0.1 if kind == 0 else 5.0
+                if not all(math.isfinite(v) and abs(v) <= limit for v in values):
+                    raise ValueError("Invalid table value")
+                upload["data"].extend(payload[4:])
+                if kind:
+                    self._cal_tables[kind][offset:offset + count] = values
+            elif command == MsgType.MSG_COMMIT_CALIBRATION_UPLOAD:
+                upload = self._cal_upload
+                if len(payload) != 5:
+                    raise ValueError("Invalid commit length")
+                if (upload is None or upload["kind"] != kind or upload["source"] != self._encoder_source or len(upload["data"]) != 4 * total or
+                        zlib.crc32(upload["data"]) != struct.unpack_from("<I", payload, 1)[0]):
+                    raise RuntimeError("Incomplete upload or CRC mismatch")
+                values = list(struct.unpack(f"<{total}f", upload["data"]))
+                if kind == 0:
+                    step = 2 * math.pi / total
+                    if not self._encoder_flags & 4 or any(not 0.1 * step <= step + values[(i+1) % total] - values[i] <= 2 * step for i in range(total)):
+                        raise ValueError("Encoder table must preserve monotonic angle and valid alignment")
+                    self._encoder_flags = (self._encoder_flags | 1) & ~2
+                    self._anti_flags &= ~1
+                else:
+                    self._anti_flags = 1
+                self._cal_tables[kind] = values
+                self._cal_upload = None
+            else:
+                raise ValueError("Unsupported calibration command")
+            self._ack(command)
+        except (ValueError, struct.error) as exc:
+            self._error(MsgType.MSG_INVALID_PAYLOAD, command, CommandErrorCode.OUT_OF_RANGE, str(exc))
+        except RuntimeError as exc:
+            self._error(MsgType.MSG_ERROR, command, CommandErrorCode.INVALID_STATE, str(exc))
+        return True
 
     def _operation_failed(self) -> None:
         """Inject the common one-shot operation fault for simulator testing."""

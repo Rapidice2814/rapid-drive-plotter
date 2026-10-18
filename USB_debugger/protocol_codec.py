@@ -7,6 +7,7 @@ import struct
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 from device_definitions import DeviceInfo
+from calibration_protocol import CalibrationInfo, CalibrationTable
 
 from protocol_definitions import (
     SOF1_BIN,
@@ -121,10 +122,68 @@ class RawPacket:
     msg_type_int: int
     payload_bytes: bytes
 
+@dataclass(frozen=True)
+class EncoderSourceInfo:
+    source_id: int
+    name: str
+    calibratable: bool
+
+@dataclass(frozen=True)
+class EncoderInfoPayload:
+    selected: int
+    flags: int
+    stage: int
+    error: int
+    progress: int
+    sources: tuple[EncoderSourceInfo, ...]
+
+    @classmethod
+    def decode(cls, payload: bytes) -> EncoderInfoPayload:
+        if len(payload) < 7:
+            raise ValueError("Truncated encoder info")
+        selected, flags, stage, error, progress, count = struct.unpack_from("<BBBBHB", payload)
+        if flags & ~15 or stage > 8 or error > 7 or progress > 1000 or not 1 <= count <= 8:
+            raise ValueError("Invalid encoder status")
+        sources = []
+        offset = 7
+        for _ in range(count):
+            if offset + 3 > len(payload):
+                raise ValueError("Truncated encoder source")
+            identifier, capabilities, size = payload[offset:offset + 3]
+            offset += 3
+            if capabilities & ~1 or not 1 <= size <= 31 or offset + size > len(payload):
+                raise ValueError("Invalid encoder source")
+            name = payload[offset:offset + size].decode("ascii")
+            if not name.strip() or any(ord(char) < 32 or ord(char) > 126 for char in name):
+                raise ValueError("Invalid encoder source name")
+            sources.append(EncoderSourceInfo(identifier, name, bool(capabilities & 1)))
+            offset += size
+        if offset != len(payload) or len({s.source_id for s in sources}) != count or len({s.name for s in sources}) != count:
+            raise ValueError("Duplicate encoder source or trailing data")
+        return cls(selected, flags, stage, error, progress, tuple(sources))
+
+    def encode(self) -> bytes:
+        payload = struct.pack("<BBBBHB", self.selected, self.flags, self.stage, self.error, self.progress, len(self.sources))
+        for source in self.sources:
+            name = source.name.encode("ascii")
+            payload += bytes((source.source_id, int(source.calibratable), len(name))) + name
+        self.decode(payload)
+        return payload
+
+@dataclass(frozen=True)
+class EncoderSourcePayload:
+    source_id: int
+
+@dataclass(frozen=True)
+class EncoderCorrectionPayload:
+    enabled: bool
+
 DecodedPayload: TypeAlias = (
     LogPayload | PIDPayload | TextPayload | VarPayload | DeviceInfo
     | StatePayload | MaskPayload | NodeIdPayload | CanCyclicTypePayload
     | CanCyclicRatePayload | ErrorFlagsPayload | ControlModePayload | CommandErrorPayload
+    | EncoderInfoPayload | EncoderSourcePayload | EncoderCorrectionPayload
+    | CalibrationInfo | CalibrationTable
 )
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
@@ -324,6 +383,20 @@ class ProtocolCodec:
             except (ValueError, UnicodeError):
                 return Packet(msg_type_int, None)
 
+        if msg_type_int in (MsgType.MSG_CALIBRATION_INFO_REPLY, MsgType.MSG_CALIBRATION_TABLE_REPLY):
+            try:
+                value = (CalibrationInfo.decode(raw_packet.payload_bytes) if msg_type_int == MsgType.MSG_CALIBRATION_INFO_REPLY
+                         else CalibrationTable.decode(raw_packet.payload_bytes))
+                return Packet(msg_type_int, value)
+            except ValueError:
+                return Packet(msg_type_int, None)
+
+        if msg_type_int == MsgType.MSG_ENCODER_INFO_REPLY:
+            try:
+                return Packet(msg_type_int, EncoderInfoPayload.decode(raw_packet.payload_bytes))
+            except (ValueError, UnicodeError):
+                return Packet(msg_type_int, None)
+
         decoder = {
             MsgType.MSG_LOG_DATA: self._decode_log_payload,
             MsgType.MSG_PID_REPLY: self._decode_pid_payload,
@@ -373,12 +446,19 @@ class ProtocolCodec:
                 MsgType.MSG_GET_LATCHED_ERRORS,
                 MsgType.MSG_CLEAR_LATCHED_ERRORS,
                 MsgType.MSG_GET_CONTROL_MODE,
+                MsgType.MSG_GET_ENCODER_INFO,
             }
             if msg_type not in empty_payload_types:
                 raise ValueError(f"{msg_type.name} requires a payload")
             return RawPacket(msg_type_int=int(msg_type), payload_bytes=b"")
 
-        if msg_type == MsgType.MSG_GET_PID and isinstance(data, PIDPayload):
+        if msg_type == MsgType.MSG_SET_ENCODER_SOURCE and isinstance(data, EncoderSourcePayload):
+            if not 0 <= data.source_id <= 255:
+                raise ValueError("Encoder source ID must fit in one byte")
+            payload = bytes((data.source_id,))
+        elif msg_type == MsgType.MSG_SET_ENCODER_CORRECTION and isinstance(data, EncoderCorrectionPayload):
+            payload = bytes((int(data.enabled),))
+        elif msg_type == MsgType.MSG_GET_PID and isinstance(data, PIDPayload):
             payload = struct.pack("<B", data.controller_id)
         elif msg_type == MsgType.MSG_SET_PID and isinstance(data, PIDPayload):
             gains = (data.kp, data.ki, data.kd)

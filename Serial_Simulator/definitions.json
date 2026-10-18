@@ -1,4 +1,5 @@
 {
+  "encoder_sources": [{"id": 0, "name": "AS5047P timer", "calibratable": true}],
   "signals": [
     {
       "type": "u32",

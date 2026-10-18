@@ -20,3 +20,12 @@ include = ["USB_debugger*", "Serial_Simulator*"]
 
 [tool.setuptools.package-data]
 Serial_Simulator = ["definitions.json"]
+
+[project.optional-dependencies]
+dev = ["pyright==1.1.414"]
+
+[tool.pyright]
+include = ["USB_debugger", "Serial_Simulator", "config.py"]
+extraPaths = ["USB_debugger"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"

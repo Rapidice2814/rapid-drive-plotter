@@ -6,10 +6,13 @@ import threading
 import time
 
 from device_definitions import DeviceInfo, Definitions, DefinitionCache, SelectionStore, PAGE_HEADER, parse_rows
-from protocol_codec import Packet, CommandErrorPayload
+from protocol_codec import Packet, CommandErrorPayload, EncoderInfoPayload
+from calibration_protocol import CalibrationInfo, CalibrationTable
 from protocol_definitions import MsgType, ERROR_REPLY_TYPES
 
 REPLIES = {
+    MsgType.MSG_GET_CALIBRATION_INFO: MsgType.MSG_CALIBRATION_INFO_REPLY,
+    MsgType.MSG_GET_CALIBRATION_TABLE: MsgType.MSG_CALIBRATION_TABLE_REPLY,
     MsgType.MSG_GET_DEVICE_INFO: MsgType.MSG_DEVICE_INFO_REPLY,
     MsgType.MSG_GET_DEFINITIONS: MsgType.MSG_DEFINITIONS_REPLY,
     MsgType.MSG_GET_MASK: MsgType.MSG_MASK_REPLY,
@@ -21,12 +24,13 @@ REPLIES = {
     MsgType.MSG_GET_LATCHED_ERRORS: MsgType.MSG_LATCHED_ERRORS_REPLY,
     MsgType.MSG_GET_CAN_CYCLIC_RATE: MsgType.MSG_CAN_CYCLIC_REPLY,
     MsgType.MSG_GET_CONTROL_MODE: MsgType.MSG_CONTROL_MODE_REPLY,
+    MsgType.MSG_GET_ENCODER_INFO: MsgType.MSG_ENCODER_INFO_REPLY,
 }
 ERRORS = ERROR_REPLY_TYPES
 
 
 class ProtocolSession:
-    def __init__(self, codec, transmit, ready, failed, sample_rate=8000, clock=time.monotonic,
+    def __init__(self, codec, transmit, ready, failed, sample_rate: float = 8000, clock=time.monotonic,
                  logging_changed=None, definitions_ready=None, cache=None, selections=None,
                  rejected=None):
         self.codec, self.transmit = codec, transmit
@@ -165,6 +169,8 @@ class ProtocolSession:
             self._request_page(0, 0)
 
     def _definitions_complete(self, definitions):
+        if self.info is None:
+            raise ValueError("Definitions received before device info")
         definitions.validate(self.info)
         self.definitions = definitions
         self.codec.set_definitions(definitions, self.info)
@@ -175,6 +181,8 @@ class ProtocolSession:
         self._enqueue(Packet(MsgType.MSG_START_LOG, None))
 
     def _receive_page(self, raw):
+        if self.pending is None or self.info is None:
+            raise ValueError("Definition page received without a pending discovery request")
         if len(raw.payload_bytes) < PAGE_HEADER.size:
             raise ValueError("Truncated definition page")
         kind, start, total, returned = PAGE_HEADER.unpack_from(raw.payload_bytes)
@@ -228,6 +236,16 @@ class ProtocolSession:
                            MsgType.MSG_NODE_ID_REPLY: 1, MsgType.MSG_ACTIVE_ERRORS_REPLY: 4,
                            MsgType.MSG_LATCHED_ERRORS_REPLY: 4, MsgType.MSG_CAN_CYCLIC_REPLY: 5,
                            MsgType.MSG_CONTROL_MODE_REPLY: 1}
+                if expected == MsgType.MSG_ENCODER_INFO_REPLY:
+                    EncoderInfoPayload.decode(raw.payload_bytes)
+                if expected == MsgType.MSG_CALIBRATION_INFO_REPLY:
+                    info_cal = CalibrationInfo.decode(raw.payload_bytes)
+                    if bytes((info_cal.kind,)) != self.pending.payload_bytes:
+                        raise ValueError("Calibration info kind mismatch")
+                if expected == MsgType.MSG_CALIBRATION_TABLE_REPLY:
+                    table = CalibrationTable.decode(raw.payload_bytes)
+                    if struct.pack("<BHB", table.kind, table.offset, len(table.values)) != self.pending.payload_bytes:
+                        raise ValueError("Calibration table range mismatch")
                 if expected in lengths and len(raw.payload_bytes) != lengths[expected]:
                     raise ValueError(f"Malformed {expected.name}")
                 if command in (MsgType.MSG_GET_PID, MsgType.MSG_GET_VAR, MsgType.MSG_GET_CAN_CYCLIC_RATE):
@@ -235,7 +253,8 @@ class ProtocolSession:
                         raise ValueError("Reply ID does not match outstanding command")
                 if command == MsgType.MSG_GET_DEVICE_INFO:
                     info = DeviceInfo.decode(raw.payload_bytes)
-                    if not self.initializing and replace(self.info, firmware=info.firmware) != info:
+                    if not self.initializing and (
+                            self.info is None or replace(self.info, firmware=info.firmware) != info):
                         raise ValueError("Device capabilities or definitions changed; reconnect to refresh discovery")
                     self.info = info
                     self.sample_rate = self.info.sample_rate

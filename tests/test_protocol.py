@@ -119,7 +119,7 @@ class CodecTests(unittest.TestCase):
                   MsgType.MSG_DEVICE_INFO_REPLY, MsgType.MSG_GET_DEFINITIONS,
                   MsgType.MSG_DEFINITIONS_REPLY, MsgType.MSG_DEFINITIONS_ERROR, MsgType.MSG_LOG_DATA]
         self.assertEqual(list(map(int, prefix)), list(range(7)))
-        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x28)))
+        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x36)))
         self.assertEqual(int(MsgType.MSG_UNKNOWN_TYPE), 0xFA)
         self.assertEqual(int(MsgType.MSG_ERROR), 0xFF)
         self.assertFalse(hasattr(MsgType, "MSG_GET_VERSION"))
@@ -285,9 +285,18 @@ class DiscoveryTests(unittest.TestCase):
     def test_timeout_discards_connection_ids(self):
         self.h.session.clock = lambda: 0
         self.h.session.start()
-        self.h.session.clock = lambda: 3
+        for now in (2, 4):
+            self.h.session.clock = lambda: now
+            self.h.session.tick()
+            self.assertTrue(self.h.session.active)
+            self.assertFalse(self.h.errors)
+        self.assertEqual(len(self.h.sent), 3)
+        self.assertTrue(all(frame == self.h.sent[0] for frame in self.h.sent))
+        self.h.session.clock = lambda: 6
         self.h.session.tick()
         self.assertTrue(self.h.errors)
+        self.assertIn("MSG_GET_DEVICE_INFO", self.h.errors[-1])
+        self.assertIn("3 startup attempts", self.h.errors[-1])
         self.assertFalse(self.h.session.active)
         self.assertEqual(self.h.codec.variable_list, [])
 

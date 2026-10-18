@@ -37,14 +37,14 @@ class _InteractiveViewBox(pg.ViewBox):
 
     userInteracted = Signal()
 
-    def wheelEvent(self, event, axis=None) -> None:
+    def wheelEvent(self, ev, axis=None) -> None:
         self.userInteracted.emit()
-        super().wheelEvent(event, axis)
+        super().wheelEvent(ev, axis)
 
-    def mouseDragEvent(self, event, axis=None) -> None:
-        if event.isStart():
+    def mouseDragEvent(self, ev, axis=None) -> None:
+        if ev.isStart():
             self.userInteracted.emit()
-        super().mouseDragEvent(event, axis)
+        super().mouseDragEvent(ev, axis)
 
 
 class PlotPanel(QWidget):
@@ -122,13 +122,13 @@ class PlotPanel(QWidget):
         self.graph = pg.GraphicsLayoutWidget(self)
         layout.addWidget(self.graph)
         self.view_box = _InteractiveViewBox()
-        self.plot = self.graph.addPlot(title="Live Data", viewBox=self.view_box)
+        self.plot = self.graph.ci.addPlot(title="Live Data", viewBox=self.view_box)
         self.view_box.userInteracted.connect(self._pause_auto_follow)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.setDownsampling(auto=True, mode="peak")
         self.plot.setClipToView(True)
         self.plot.addLegend()
-        self.plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+        self.view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._drain_queue_and_update)
@@ -241,12 +241,12 @@ class PlotPanel(QWidget):
     def _set_auto_follow(self, enabled: bool) -> None:
         self._auto_follow = enabled
         if enabled:
-            self.plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+            self.view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
             self._update_follow_range()
         else:
             # Preserve the current view and prevent y auto-ranging from
             # overriding deliberate manual navigation.
-            self.plot.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+            self.view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
 
     def _pause_auto_follow(self) -> None:
         if self._auto_follow:
@@ -264,7 +264,7 @@ class PlotPanel(QWidget):
         start_time = max(0.0, end_time - window)
         if end_time <= start_time:
             end_time = start_time + 1.0 / self.sample_rate
-        self.plot.setXRange(start_time, end_time, padding=0)
+        self.view_box.setXRange(start_time, end_time, padding=0)
 
     def clear_data(self) -> None:
         """Clear plot history and pending payloads, e.g. before reconnecting."""

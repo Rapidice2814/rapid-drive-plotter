@@ -1,3 +1,5 @@
+from typing import TypedDict
+
 from ui.busy_button import BusyButton
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -18,6 +20,13 @@ from protocol_codec import CanCyclicRatePayload, CanCyclicTypePayload, NodeIdPay
 from protocol_definitions import MsgType
 
 
+class CyclicRateWidgets(TypedDict):
+    label: QLabel
+    input: QDoubleSpinBox
+    read_button: BusyButton
+    set_button: BusyButton
+
+
 class CanInterfaceDock(QDockWidget):
     """Reads and edits CAN identity and per-message cyclic rates."""
 
@@ -25,7 +34,7 @@ class CanInterfaceDock(QDockWidget):
         super().__init__("CAN Interface", parent)
         self.on_command = on_command
         self._connected = False
-        self.cyclic_rate_widgets: dict[int, dict[str, QWidget]] = {}
+        self.cyclic_rate_widgets: dict[int, CyclicRateWidgets] = {}
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea

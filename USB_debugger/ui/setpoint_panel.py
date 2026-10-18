@@ -60,8 +60,8 @@ class SetpointDock(QDockWidget):
         self._active_mode: str | None = None
         self._driver_state: FOCState | None = None
         self.value_widgets: dict[str, NoWheelDoubleSpinBox] = {}
-        self.set_buttons: dict[str] = {}
-        self.mode_buttons: dict[str] = {}
+        self.set_buttons: dict[str, BusyButton] = {}
+        self.mode_buttons: dict[str, BusyButton] = {}
         self.var_modes: dict[str, str] = {}
 
         self.setAllowedAreas(
@@ -312,6 +312,8 @@ class SetpointDock(QDockWidget):
 
     def set_var_value(self, var_id: int, value: int | float):
         name = next((name for name, identifier in self.variable_ids.items() if identifier == var_id), None)
+        if name is None:
+            return
         widget = self.value_widgets.get(name)
         if widget is None or widget.hasFocus():
             return

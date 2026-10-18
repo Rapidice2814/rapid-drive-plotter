@@ -52,6 +52,35 @@ class DynamicUITests(unittest.TestCase):
         self.assertEqual(self.window.var_dock.var_widgets, {})
         self.assertFalse(self.window.setpoint_dock.mode_buttons["speed"].isEnabled())
 
+    def test_basics_controls_scroll_inside_small_dock(self):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QGroupBox
+
+        dock = self.window.basics_dock
+        dock.setFloating(True)
+        dock.show()
+        scroll = dock.scroll_area
+        panel = scroll.widget()
+        self.assertIsNotNone(panel)
+        for width, height in ((560, 780), (420, 420)):
+            with self.subTest(width=width, height=height):
+                dock.resize(width, height)
+                self.app.processEvents()
+                self.assertLessEqual(dock.height(), height)
+                if height == 420:
+                    self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+                groups = [panel.layout().itemAt(index).widget()
+                          for index in range(panel.layout().count())]
+                groups = [group for group in groups if isinstance(group, QGroupBox)]
+                for upper, lower in zip(groups, groups[1:]):
+                    self.assertLess(upper.geometry().bottom(), lower.geometry().top())
+                scroll.ensureWidgetVisible(dock.enter_bootloader_button)
+                self.app.processEvents()
+                position = dock.enter_bootloader_button.mapTo(scroll.viewport(), QPoint(0, 0))
+                self.assertGreaterEqual(position.y(), 0)
+                self.assertLessEqual(position.y() + dock.enter_bootloader_button.height(),
+                                     scroll.viewport().height())
+
     def test_firmware_version_refresh_uses_device_info(self):
         from protocol_codec import Packet
         self.populate(fixture())
@@ -184,6 +213,27 @@ class DynamicUITests(unittest.TestCase):
         self.assertFalse(button.is_busy)
         self.assertFalse(button.isEnabled())
 
+    def test_flash_and_bootloader_buttons_available_in_error(self):
+        self.prepare_busy_commands()
+        dock = self.window.basics_dock
+        buttons = (dock.flash_save_button, dock.flash_load_button, dock.flash_clear_button,
+                   dock.enter_bootloader_button)
+        for state in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR):
+            dock.set_state(state)
+            self.assertTrue(all(button.isEnabled() for button in buttons))
+        for button, command in zip(buttons, (MsgType.MSG_FLASH_SAVE, MsgType.MSG_FLASH_LOAD,
+                                            MsgType.MSG_FLASH_CLEAR, MsgType.MSG_ENTER_BOOTLOADER)):
+            button.click()
+            self.assertEqual(self.sent[-1].msg_type, command)
+            self.assertTrue(button.is_busy)
+            self.callbacks[-1](True)
+            self.assertTrue(button.isEnabled())
+        for state in (FOCState.FOC_STATE_RUN, FOCState.FOC_STATE_STOP, FOCState.FOC_STATE_FLASH_SAVE):
+            dock.set_state(state)
+            self.assertFalse(any(button.isEnabled() for button in buttons))
+        self.window.set_worker(None)
+        self.assertFalse(any(button.isEnabled() for button in buttons))
+
     def test_worker_completion_is_delivered_on_gui_thread(self):
         import threading
         self.prepare_busy_commands()
@@ -252,6 +302,37 @@ class DynamicUITests(unittest.TestCase):
         self.assertFalse(button.is_busy)
         self.assertTrue(button.isEnabled())
         self.assertIn("Invalid command value", self.window.command_dock.command_log.toPlainText())
+
+    def test_non_button_send_failure_is_visible(self):
+        self.prepare_busy_commands()
+
+        def fail(packet, completed=None):
+            raise ValueError("Invalid background command")
+
+        self.window.set_command_sender(fail, supports_completion=True)
+        self.window.basics_dock.request_state()
+        self.assertFalse(self.window.basics_dock.state_button.is_busy)
+        self.assertIn("Invalid background command", self.window.command_dock.command_log.toPlainText())
+
+    def test_old_completion_cannot_finish_new_button_action(self):
+        self.prepare_busy_commands()
+        button = self.window.basics_dock.state_button
+        button.click()
+        old_callback = self.callbacks[0]
+        button.reset_busy()
+        button.click()
+        self.assertTrue(button.is_busy)
+        old_callback(False)
+        self.assertTrue(button.is_busy)
+        self.callbacks[-1](True)
+        self.assertFalse(button.is_busy)
+
+    def test_unknown_setpoint_reply_is_ignored(self):
+        self.populate(fixture())
+        dock = self.window.setpoint_dock
+        before = {name: widget.value() for name, widget in dock.value_widgets.items()}
+        dock.set_var_value(255, 123.0)
+        self.assertEqual(before, {name: widget.value() for name, widget in dock.value_widgets.items()})
 
     def test_operation_failed_flag_has_a_readable_label(self):
         from protocol_definitions import FOCError

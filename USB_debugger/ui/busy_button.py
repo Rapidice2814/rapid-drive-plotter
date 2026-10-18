@@ -1,4 +1,7 @@
 """Command buttons with scoped click ownership and reply-driven busy state."""
+from __future__ import annotations
+
+from typing import ClassVar
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QPushButton
 
@@ -12,7 +15,7 @@ class BusyButton(QPushButton):
     """
 
     activated = Signal(bool)
-    _current = None
+    _current: ClassVar[BusyButton | None] = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -24,7 +27,7 @@ class BusyButton(QPushButton):
         self.clicked.connect(self._activate)
 
     @classmethod
-    def current(cls):
+    def current(cls) -> BusyButton | None:
         return cls._current
 
     def _activate(self, checked=False):
@@ -39,7 +42,7 @@ class BusyButton(QPushButton):
     def is_busy(self):
         return self._pending_count > 0
 
-    def begin_busy(self):
+    def begin_busy(self) -> int:
         if not self.is_busy:
             self._generation += 1
             self._normal_cursor = self.cursor()
@@ -47,7 +50,7 @@ class BusyButton(QPushButton):
         self._update_busy()
         return self._generation
 
-    def end_busy(self, generation=None):
+    def end_busy(self, generation: int | None = None):
         if generation is not None and generation != self._generation:
             return
         self._pending_count = max(0, self._pending_count - 1)
