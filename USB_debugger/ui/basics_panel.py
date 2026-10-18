@@ -1,3 +1,4 @@
+from ui.busy_button import BusyButton
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -6,7 +7,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -64,8 +64,8 @@ class BasicsDock(QDockWidget):
         self.state_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.state_button = QPushButton("Read state")
-        self.state_button.clicked.connect(self.request_state)
+        self.state_button = BusyButton("Read state")
+        self.state_button.activated.connect(self.request_state)
         state_inline = QWidget()
         state_inline_layout = QHBoxLayout(state_inline)
         state_inline_layout.setContentsMargins(0, 0, 0, 0)
@@ -93,8 +93,8 @@ class BasicsDock(QDockWidget):
         active_row_layout = QHBoxLayout(active_row)
         active_row_layout.setContentsMargins(0, 0, 0, 0)
         active_row_layout.addWidget(self.active_errors_label, 1)
-        self.read_active_errors_button = QPushButton("Read")
-        self.read_active_errors_button.clicked.connect(self.request_active_errors)
+        self.read_active_errors_button = BusyButton("Read")
+        self.read_active_errors_button.activated.connect(self.request_active_errors)
         active_row_layout.addWidget(self.read_active_errors_button)
         errors_form.addRow("Active", active_row)
 
@@ -108,16 +108,16 @@ class BasicsDock(QDockWidget):
         latched_row_layout = QHBoxLayout(latched_row)
         latched_row_layout.setContentsMargins(0, 0, 0, 0)
         latched_row_layout.addWidget(self.latched_errors_label, 1)
-        self.read_latched_errors_button = QPushButton("Read")
-        self.read_latched_errors_button.clicked.connect(self.request_latched_errors)
+        self.read_latched_errors_button = BusyButton("Read")
+        self.read_latched_errors_button.activated.connect(self.request_latched_errors)
         latched_row_layout.addWidget(self.read_latched_errors_button)
         errors_form.addRow("Latched", latched_row)
 
-        self.clear_latched_errors_button = QPushButton("Clear latched errors")
+        self.clear_latched_errors_button = BusyButton("Clear latched errors")
         self.clear_latched_errors_button.setToolTip(
             "Clear latched driver errors in any state."
         )
-        self.clear_latched_errors_button.clicked.connect(self.clear_latched_errors)
+        self.clear_latched_errors_button.activated.connect(self.clear_latched_errors)
         errors_form.addRow(self.clear_latched_errors_button)
         layout.addWidget(errors_group)
 
@@ -127,8 +127,8 @@ class BasicsDock(QDockWidget):
         self.version_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.version_button = QPushButton("Read version")
-        self.version_button.clicked.connect(self.request_version)
+        self.version_button = BusyButton("Read version")
+        self.version_button.activated.connect(self.request_version)
         version_inline = QWidget()
         version_inline_layout = QHBoxLayout(version_inline)
         version_inline_layout.setContentsMargins(0, 0, 0, 0)
@@ -140,15 +140,15 @@ class BasicsDock(QDockWidget):
 
         state_select_group = QGroupBox("Go to a specific state")
         state_select_layout = QVBoxLayout(state_select_group)
-        self.stop_state_button = QPushButton("Enter STOP state")
+        self.stop_state_button = BusyButton("Enter STOP state")
         self.stop_state_button.setToolTip("Set the driver state to FOC_STATE_STOP.")
-        self.stop_state_button.clicked.connect(
+        self.stop_state_button.activated.connect(
             lambda: self._send_state(FOCState.FOC_STATE_STOP)
         )
         state_select_layout.addWidget(self.stop_state_button)
-        self.run_state_button = QPushButton("Enter RUN state")
+        self.run_state_button = BusyButton("Enter RUN state")
         self.run_state_button.setToolTip("Set the driver state to FOC_STATE_RUN.")
-        self.run_state_button.clicked.connect(
+        self.run_state_button.activated.connect(
             lambda: self._send_state(FOCState.FOC_STATE_RUN)
         )
         state_select_layout.addWidget(self.run_state_button)
@@ -161,8 +161,8 @@ class BasicsDock(QDockWidget):
             label = state.name.removeprefix("FOC_STATE_").replace("_", " ").title()
             self.state_combo.addItem(f"{label} ({state.value})", state.value)
         selected_state_row.addWidget(self.state_combo, 1)
-        self.go_to_state_button = QPushButton("Go to selected state")
-        self.go_to_state_button.clicked.connect(self._send_selected_state)
+        self.go_to_state_button = BusyButton("Go to selected state")
+        self.go_to_state_button.activated.connect(self._send_selected_state)
         selected_state_row.addWidget(self.go_to_state_button)
         state_select_layout.addLayout(selected_state_row)
         layout.addWidget(state_select_group)
@@ -173,32 +173,32 @@ class BasicsDock(QDockWidget):
         for mode, label in CONTROL_MODE_LABELS.items():
             self.control_mode_combo.addItem(label, int(mode))
         mode_select_layout.addWidget(self.control_mode_combo, 1)
-        self.set_control_mode_button = QPushButton("Go to selected mode")
-        self.set_control_mode_button.clicked.connect(self.set_selected_control_mode)
+        self.set_control_mode_button = BusyButton("Go to selected mode")
+        self.set_control_mode_button.activated.connect(self.set_selected_control_mode)
         mode_select_layout.addWidget(self.set_control_mode_button)
         layout.addWidget(control_mode_group)
 
         flash_group = QGroupBox("Flash storage")
         flash_layout = QVBoxLayout(flash_group)
-        self.flash_save_button = QPushButton("Save settings to flash")
+        self.flash_save_button = BusyButton("Save settings to flash")
         self.flash_save_button.setToolTip(
             "Send FLASH_SAVE. Available only while the driver is IDLE."
         )
-        self.flash_save_button.clicked.connect(
+        self.flash_save_button.activated.connect(
             lambda: self._send(MsgType.MSG_FLASH_SAVE)
         )
-        self.flash_load_button = QPushButton("Load settings from flash")
+        self.flash_load_button = BusyButton("Load settings from flash")
         self.flash_load_button.setToolTip(
             "Send FLASH_LOAD. Available only while the driver is IDLE."
         )
-        self.flash_load_button.clicked.connect(
+        self.flash_load_button.activated.connect(
             lambda: self._send(MsgType.MSG_FLASH_LOAD)
         )
-        self.flash_clear_button = QPushButton("Clear settings from flash")
+        self.flash_clear_button = BusyButton("Clear settings from flash")
         self.flash_clear_button.setToolTip(
             "Send FLASH_CLEAR. Available only while the driver is IDLE."
         )
-        self.flash_clear_button.clicked.connect(
+        self.flash_clear_button.activated.connect(
             lambda: self._send(MsgType.MSG_FLASH_CLEAR)
         )
         flash_layout.addWidget(self.flash_save_button)
@@ -208,11 +208,11 @@ class BasicsDock(QDockWidget):
 
         bootloader_group = QGroupBox("Bootloader")
         bootloader_layout = QVBoxLayout(bootloader_group)
-        self.enter_bootloader_button = QPushButton("Enter bootloader")
+        self.enter_bootloader_button = BusyButton("Enter bootloader")
         self.enter_bootloader_button.setToolTip(
             "Available only while the driver is IDLE."
         )
-        self.enter_bootloader_button.clicked.connect(
+        self.enter_bootloader_button.activated.connect(
             lambda: self._send(MsgType.MSG_ENTER_BOOTLOADER)
         )
         bootloader_layout.addWidget(self.enter_bootloader_button)
@@ -355,7 +355,9 @@ class BasicsDock(QDockWidget):
             return
         self._send(MsgType.MSG_CLEAR_LATCHED_ERRORS)
         self._show_error_value(self.latched_errors_label, "Clear requested")
+        self.request_active_errors()
         self.request_latched_errors()
+        self.request_state()
 
     @staticmethod
     def _style_error_label(label: QLabel, value: int | None):

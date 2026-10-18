@@ -3,7 +3,32 @@ from enum import IntEnum, IntFlag
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
+
+
+class CommandErrorCode(IntEnum):
+    """Stable error reasons, separate from device fault flags and field IDs."""
+
+    UNKNOWN_COMMAND = 1
+    INVALID_LENGTH = 2
+    UNKNOWN_ID = 3
+    OUT_OF_RANGE = 4
+    INVALID_STATE = 5
+    ADC_NOT_CALIBRATED = 6
+    ENCODER_NOT_ALIGNED = 7
+    ACTIVE_FAULTS = 8
+    LATCHED_FAULTS = 9
+    MUST_BE_IDLE = 10
+    MUST_BE_STOPPED = 11
+    MOTOR_MOVING = 12
+    LOGGING_ACTIVE = 13
+    INVALID_MASK = 14
+    TOO_MANY_SIGNALS = 15
+    INVALID_DEFINITIONS = 16
+    RECEIVE_OVERFLOW = 17
+    UNKNOWN_DEFINITION_LIST = 18
+    DEFINITION_INDEX = 19
+    INTERNAL = 20
 
 
 class FOCState(IntEnum):
@@ -93,6 +118,7 @@ class FOCError(IntFlag):
     FOC_ERROR_VBUS_UV = 1 << 12
     FOC_ERROR_IBUS_OC = 1 << 13
     FOC_ERROR_ENCODER_FAULT = 1 << 14
+    FOC_ERROR_OPERATION_FAILED = 1 << 15
 
 
 # Keep user-facing descriptions alongside the bit definitions so the UI and
@@ -113,6 +139,7 @@ FOC_ERROR_LABELS = {
     FOCError.FOC_ERROR_VBUS_UV: "VBUS under-voltage",
     FOCError.FOC_ERROR_IBUS_OC: "IBUS over-current",
     FOCError.FOC_ERROR_ENCODER_FAULT: "Encoder fault",
+    FOCError.FOC_ERROR_OPERATION_FAILED: "Operation failed",
 }
 
 
@@ -164,3 +191,9 @@ class MsgType(IntEnum):
     MSG_BUFFER_OVERFLOW = 0xFD
     MSG_ACK = 0xFE
     MSG_ERROR = 0xFF
+
+
+ERROR_REPLY_TYPES = frozenset((
+    MsgType.MSG_UNKNOWN_TYPE, MsgType.MSG_INVALID_PAYLOAD, MsgType.MSG_UNKNOWN_ID,
+    MsgType.MSG_BUFFER_OVERFLOW, MsgType.MSG_ERROR, MsgType.MSG_DEFINITIONS_ERROR,
+))

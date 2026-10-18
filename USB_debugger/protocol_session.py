@@ -6,8 +6,8 @@ import threading
 import time
 
 from device_definitions import DeviceInfo, Definitions, DefinitionCache, SelectionStore, PAGE_HEADER, parse_rows
-from protocol_codec import Packet
-from protocol_definitions import MsgType
+from protocol_codec import Packet, CommandErrorPayload
+from protocol_definitions import MsgType, ERROR_REPLY_TYPES
 
 REPLIES = {
     MsgType.MSG_GET_DEVICE_INFO: MsgType.MSG_DEVICE_INFO_REPLY,
@@ -22,10 +22,7 @@ REPLIES = {
     MsgType.MSG_GET_CAN_CYCLIC_RATE: MsgType.MSG_CAN_CYCLIC_REPLY,
     MsgType.MSG_GET_CONTROL_MODE: MsgType.MSG_CONTROL_MODE_REPLY,
 }
-ERRORS = {MsgType.MSG_UNKNOWN_TYPE, MsgType.MSG_INVALID_PAYLOAD,
-          MsgType.MSG_UNKNOWN_ID, MsgType.MSG_BUFFER_OVERFLOW, MsgType.MSG_ERROR}
-DISCOVERY_ERRORS = {1: "unknown definition list", 2: "definition index out of range",
-                    3: "driver definitions contain duplicate names"}
+ERRORS = ERROR_REPLY_TYPES
 
 
 class ProtocolSession:
@@ -42,6 +39,7 @@ class ProtocolSession:
         self.selections = selections if selections is not None else SelectionStore()
         self.lock = threading.RLock()
         self.commands = deque()
+        self.completions = {}
         self.pending = None
         self.active = False
         self.initializing = False
@@ -68,25 +66,49 @@ class ProtocolSession:
             self.active = self.initializing = False
             self.commands.clear()
             self.pending = None
+            callbacks = list(self.completions.values())
+            self.completions.clear()
             self.requested_mask = None
             self.info = self.definitions = self.firmware_version = None
             self.phase = "disconnected"
             self.codec.clear_definitions()
+            for callback in callbacks:
+                callback(False)
 
-    def send(self, packet):
+    def send(self, packet, completed=None):
         with self.lock:
             if not self.active or self.initializing:
+                if completed is not None:
+                    completed(False)
                 return
-            self._enqueue(packet)
+            self._enqueue(packet, completed)
             self._pump()
 
-    def _enqueue(self, packet):
+    def _enqueue(self, packet, completed=None):
         raw = self.codec.encode_packet(packet)
         if self.info is not None and len(raw.payload_bytes) > self.info.max_command:
             raise ValueError("Command exceeds the device's advertised payload limit")
         self.commands.append(raw)
         if packet.msg_type == MsgType.MSG_SET_MASK:
-            self.commands.append(self.codec.encode_packet(Packet(MsgType.MSG_GET_MASK, None)))
+            confirmation = self.codec.encode_packet(Packet(MsgType.MSG_GET_MASK, None))
+            self.commands.append(confirmation)
+        else:
+            confirmation = raw
+        if completed is not None:
+            self.completions[id(confirmation)] = completed
+
+    def _complete_pending(self, success):
+        """Notify the request owner exactly once, including read-back completion."""
+        callback = self.completions.pop(id(self.pending), None)
+        self.pending = None
+        if callback is not None:
+            callback(success)
+
+    def _cancel_queued(self):
+        while self.commands:
+            callback = self.completions.pop(id(self.commands.popleft()), None)
+            if callback is not None:
+                callback(False)
 
     def _pump(self):
         if self.active and self.pending is None and self.commands:
@@ -105,11 +127,11 @@ class ProtocolSession:
 
     def _reject(self, command, message):
         """Finish a denied runtime command without discarding the connection."""
-        self.pending = None
+        self._complete_pending(False)
         if command in (MsgType.MSG_STOP_LOG, MsgType.MSG_SET_MASK):
             # Mask changes queue STOP -> SET_MASK -> GET_MASK -> START. A rejected
             # prerequisite cancels the remaining batch rather than resuming it.
-            self.commands.clear()
+            self._cancel_queued()
             self.requested_mask = None
         self.rejected_callback(message)
         self._pump()
@@ -166,20 +188,20 @@ class ProtocolSession:
                 return
             command = MsgType(self.pending.msg_type_int)
             if raw.msg_type_int in ERRORS:
-                if raw.payload_bytes:
-                    self._fail(f"Malformed {MsgType(raw.msg_type_int).name}")
+                try:
+                    error = CommandErrorPayload.decode(raw.payload_bytes)
+                    if error.command != command and not (
+                        raw.msg_type_int == MsgType.MSG_BUFFER_OVERFLOW and error.command == 0xFF
+                    ):
+                        raise ValueError("Error reply does not match outstanding command")
+                except (ValueError, UnicodeError) as exc:
+                    self._fail(f"Malformed {MsgType(raw.msg_type_int).name}: {exc}")
                     return
-                message = f"{command.name} rejected: {MsgType(raw.msg_type_int).name}"
+                message = str(error)
                 if self.initializing or raw.msg_type_int == MsgType.MSG_BUFFER_OVERFLOW:
                     self._fail(message)
                 else:
                     self._reject(command, message)
-                return
-            if raw.msg_type_int == MsgType.MSG_DEFINITIONS_ERROR:
-                if command != MsgType.MSG_GET_DEFINITIONS or len(raw.payload_bytes) != 4 or raw.payload_bytes[:3] != self.pending.payload_bytes:
-                    self._fail("Malformed discovery error")
-                else:
-                    self._fail(DISCOVERY_ERRORS.get(raw.payload_bytes[3], "Unknown discovery error"))
                 return
             expected = REPLIES.get(command, MsgType.MSG_ACK)
             if raw.msg_type_int != expected:
@@ -222,7 +244,7 @@ class ProtocolSession:
                     self.requested_mask = self.pending.payload_bytes
                 if command in (MsgType.MSG_START_LOG, MsgType.MSG_STOP_LOG):
                     self.logging_changed(command == MsgType.MSG_START_LOG)
-                self.pending = None
+                self._complete_pending(True)
                 if self.initializing and command == MsgType.MSG_START_LOG:
                     self.initializing = False
                     self.phase = "ready"

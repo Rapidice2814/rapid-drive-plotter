@@ -14,9 +14,11 @@ python -m venv .venv
 ```
 
 The application package includes the simulator and requires no firmware source
-checkout. The application supports USB protocol version 3, introduced in
-firmware 0.3.0. Earlier protocol command IDs are incompatible. Firmware version
-polling uses device info; there are no separate USB version commands.
+checkout. The application supports USB protocol version 4. It retains protocol
+3 command IDs and successful reply layouts, but uses structured errors containing
+the originating command, numeric reason, and driver-provided explanation.
+Firmware and plotter must both support version 4. Firmware version polling uses
+device info; there are no separate USB version commands.
 
 ## Connection
 
@@ -25,12 +27,29 @@ variables, and PID controllers. Python contains no built-in lists for these.
 The controls are built from the discovered definitions, then the selected mask
 is set and read back before logging starts. Commands run one at a
 time with a two-second reply deadline. Rejected runtime commands are reported
-in the terminal without disconnecting. Initialization failures, receive-buffer
-overflow, malformed replies, and timeouts stop the session and display the
-reason in the title and terminal. Mask width and
-the maximum selected signals come from the device. With the current firmware,
+in the terminal with the error name, numeric code, and driver message, without
+disconnecting. Each error is checked against the outstanding command.
+Initialization failures, receive-buffer overflow, malformed replies, and
+timeouts stop the session and display the reason in the title and terminal.
+Mask width and the maximum selected signals come from the device. With the current firmware,
 36 signals use a five-byte mask and at most eight can be selected at once.
 The plot uses the sample rate reported by the device.
+
+Command buttons display “Working…” and prevent repeat clicks while their
+requests are queued or awaiting replies. Batch actions remain busy until all
+replies arrive; mask changes include read-back confirmation. Completion,
+rejection, cancellation, and disconnect clear the indicator while preserving
+state-based availability. Flash command completion still means acceptance,
+not completion of the flash operation itself.
+
+Routine ACKs and PID/variable reply dumps are not printed in the terminal.
+Structured errors and driver text remain visible, including warnings,
+diagnostics, and responses to manually entered text commands.
+
+The fault displays include the shared Operation failed flag (bit 15,
+0x00008000) for failed calibration, tuning, identification, and storage actions.
+Clearing latched faults returns ERROR to STOP only when active faults are also
+clear; a present fault immediately relatches. Recovery does not resume RUN.
 
 ## Recording
 

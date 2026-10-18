@@ -12,8 +12,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "USB_debugger"), str(ROOT)]
-from protocol_codec import Packet, ProtocolCodec, RawPacket, VarPayload, PIDPayload, StatePayload
-from protocol_definitions import MsgType, PROTOCOL_VERSION, FOCState
+from protocol_codec import Packet, ProtocolCodec, RawPacket, VarPayload, PIDPayload, StatePayload, CommandErrorPayload
+from protocol_definitions import MsgType, PROTOCOL_VERSION, FOCState, CommandErrorCode
 from device_definitions import DeviceInfo, Definitions, DefinitionCache, SelectionStore, PAGE_HEADER, parse_rows
 from protocol_session import ProtocolSession
 from Serial_Simulator.simulator_worker import SimulatorWorker, SimulatorConfig
@@ -21,6 +21,10 @@ from Serial_Simulator.simulator_worker import SimulatorWorker, SimulatorConfig
 
 def fixture():
     return json.loads((ROOT / "Serial_Simulator/definitions.json").read_text())
+
+def error_reply(command, code=CommandErrorCode.INVALID_STATE, message="Command rejected.",
+                response=MsgType.MSG_ERROR):
+    return RawPacket(response, CommandErrorPayload(command, code, message).encode())
 
 
 def definitions_from(data):
@@ -241,7 +245,11 @@ class DiscoveryTests(unittest.TestCase):
         for payload, code in ((struct.pack("<BH", 3, 0), 1), (struct.pack("<BH", 0, 999), 2)):
             simulator._handle_packet(RawPacket(MsgType.MSG_GET_DEFINITIONS, payload))
             self.assertEqual(replies[-1].msg_type_int, MsgType.MSG_DEFINITIONS_ERROR)
-            self.assertEqual(replies[-1].payload_bytes, payload + bytes((code,)))
+            error = CommandErrorPayload.decode(replies[-1].payload_bytes)
+            self.assertEqual(error.command, MsgType.MSG_GET_DEFINITIONS)
+            self.assertEqual(error.code, CommandErrorCode.UNKNOWN_DEFINITION_LIST if code == 1
+                             else CommandErrorCode.DEFINITION_INDEX)
+            self.assertTrue(error.message)
 
     def test_malformed_or_nonprogressing_page_fails(self):
         self.begin_manual()
@@ -291,7 +299,7 @@ class DiscoveryTests(unittest.TestCase):
         self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(5)))
         self.h.session.send(Packet(MsgType.MSG_START_LOG, None))
         self.h.session.receive(RawPacket(MsgType.MSG_ACK, b""))
-        self.h.session.receive(RawPacket(MsgType.MSG_ERROR, b""))
+        self.h.session.receive(error_reply(MsgType.MSG_SET_MASK, CommandErrorCode.LOGGING_ACTIVE))
         self.assertFalse(self.h.errors)
         self.assertTrue(self.h.rejections)
         self.assertTrue(self.h.session.active)
@@ -307,8 +315,11 @@ class DiscoveryTests(unittest.TestCase):
         self.h.session.send(Packet(MsgType.MSG_SET_STATE, StatePayload(FOCState.FOC_STATE_RUN)))
         self.assertEqual(self.h.sent[-1], b"\xaa\x55\x15\x01\x00\x0c")
         self.h.session.send(Packet(MsgType.MSG_GET_STATE, None))
-        self.h.session.receive(RawPacket(MsgType.MSG_ERROR, b""))
-        self.assertEqual(self.h.rejections, ["MSG_SET_STATE rejected: MSG_ERROR"])
+        self.h.session.receive(error_reply(MsgType.MSG_SET_STATE, CommandErrorCode.ENCODER_NOT_ALIGNED,
+                                          "Encoder is not aligned."))
+        self.assertEqual(len(self.h.rejections), 1)
+        self.assertIn("ENCODER_NOT_ALIGNED", self.h.rejections[0])
+        self.assertIn("Encoder is not aligned.", self.h.rejections[0])
         self.assertFalse(self.h.errors)
         self.assertTrue(self.h.session.active)
         self.assertEqual(self.h.session.phase, "ready")
@@ -330,11 +341,11 @@ class DiscoveryTests(unittest.TestCase):
                       MsgType.MSG_UNKNOWN_ID, MsgType.MSG_UNKNOWN_TYPE):
             with self.subTest(reply=reply):
                 self.h.session.send(Packet(MsgType.MSG_GET_STATE, None))
-                self.h.session.receive(RawPacket(reply, b""))
+                self.h.session.receive(error_reply(MsgType.MSG_GET_STATE, response=reply))
                 self.assertTrue(self.h.session.active)
                 self.assertIsNone(self.h.session.pending)
                 self.assertFalse(self.h.errors)
-                self.assertIn(reply.name, self.h.rejections[-1])
+                self.assertIn("MSG_GET_STATE rejected", self.h.rejections[-1])
                 self.h.session.send(Packet(MsgType.MSG_GET_STATE, None))
                 self.h.session.receive(RawPacket(MsgType.MSG_STATE_REPLY, b"\x0e"))
                 self.assertIsNone(self.h.session.pending)
@@ -345,7 +356,7 @@ class DiscoveryTests(unittest.TestCase):
         self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(5)))
         self.h.session.send(Packet(MsgType.MSG_START_LOG, None))
         sent = len(self.h.sent)
-        self.h.session.receive(RawPacket(MsgType.MSG_ERROR, b""))
+        self.h.session.receive(error_reply(MsgType.MSG_STOP_LOG))
         self.assertTrue(self.h.session.active)
         self.assertFalse(self.h.session.commands)
         self.assertIsNone(self.h.session.pending)
@@ -353,7 +364,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_initialization_rejection_still_disconnects(self):
         self.h.session.start(["tick"])
-        self.h.session.receive(RawPacket(MsgType.MSG_ERROR, b""))
+        self.h.session.receive(error_reply(MsgType.MSG_GET_DEVICE_INFO))
         self.assertFalse(self.h.session.active)
         self.assertTrue(self.h.errors)
         self.assertFalse(self.h.rejections)
@@ -370,7 +381,8 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_malformed_error_and_buffer_overflow_still_disconnect(self):
         for reply, payload in ((MsgType.MSG_ERROR, b"unexpected"),
-                               (MsgType.MSG_BUFFER_OVERFLOW, b"")):
+                               (MsgType.MSG_BUFFER_OVERFLOW,
+                                error_reply(0xFF, CommandErrorCode.RECEIVE_OVERFLOW).payload_bytes)):
             with self.subTest(reply=reply):
                 self.h.start(["tick"])
                 self.h.session.send(Packet(MsgType.MSG_GET_STATE, None))
@@ -453,6 +465,10 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn(f"#define DEBUG_PROTOCOL_VERSION {PROTOCOL_VERSION}", header)
         for name, value in re.findall(r"\b(MSG_\w+)\s*=\s*(0x[0-9A-Fa-f]+)", header):
             self.assertEqual(int(getattr(MsgType, name)), int(value, 16), name)
+        codes = re.findall(r"\bDEBUG_ERR_(\w+)\s*=\s*(\d+)", header)
+        self.assertEqual(len(codes), len(CommandErrorCode))
+        for name, value in codes:
+            self.assertEqual(int(getattr(CommandErrorCode, name)), int(value), name)
 
 
 if __name__ == "__main__":

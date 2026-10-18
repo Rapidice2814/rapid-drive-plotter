@@ -1,4 +1,5 @@
-from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QCheckBox, QScrollArea, QPushButton
+from ui.busy_button import BusyButton
+from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QCheckBox, QScrollArea
 from PySide6.QtCore import Qt
 
 from protocol_codec import Packet
@@ -21,8 +22,8 @@ class SignalSelectorDock(QDockWidget):
         layout = QVBoxLayout(panel)
         self.mask_label = QLabel("Waiting for driver definitions")
         layout.addWidget(self.mask_label)
-        self.read_mask_button = QPushButton("Read mask from driver")
-        self.read_mask_button.clicked.connect(self.request_mask)
+        self.read_mask_button = BusyButton("Read mask from driver")
+        self.read_mask_button.activated.connect(self.request_mask)
         self.read_mask_button.setEnabled(False)
         layout.addWidget(self.read_mask_button)
         scroll = QScrollArea()

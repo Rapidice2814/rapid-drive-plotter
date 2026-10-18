@@ -125,7 +125,7 @@ def main():
     session_timer = QTimer(app)
     session_timer.timeout.connect(poll_session)
     session_timer.start(100)
-    plot.set_command_sender(session.send)
+    plot.set_command_sender(session.send, supports_completion=True)
 
     def on_data(rx_buffer: bytearray):
         with session.lock:

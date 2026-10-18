@@ -1,3 +1,4 @@
+from ui.busy_button import BusyButton
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -7,7 +8,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -60,8 +60,8 @@ class SetpointDock(QDockWidget):
         self._active_mode: str | None = None
         self._driver_state: FOCState | None = None
         self.value_widgets: dict[str, NoWheelDoubleSpinBox] = {}
-        self.set_buttons: dict[str, QPushButton] = {}
-        self.mode_buttons: dict[str, QPushButton] = {}
+        self.set_buttons: dict[str] = {}
+        self.mode_buttons: dict[str] = {}
         self.var_modes: dict[str, str] = {}
 
         self.setAllowedAreas(
@@ -98,9 +98,9 @@ class SetpointDock(QDockWidget):
             group = QGroupBox(section["title"])
             group_layout = QVBoxLayout(group)
 
-            mode_button = QPushButton(section["button"])
+            mode_button = BusyButton(section["button"])
             mode_button.setCheckable(True)
-            mode_button.clicked.connect(
+            mode_button.activated.connect(
                 lambda _checked=False, mode=section["key"]: self._activate_mode(mode)
             )
             self.mode_button_group.addButton(mode_button)
@@ -121,8 +121,8 @@ class SetpointDock(QDockWidget):
                 value.setKeyboardTracking(False)
                 value.setToolTip("Enter a target value, then click Set.")
 
-                set_button = QPushButton("Set")
-                set_button.clicked.connect(
+                set_button = BusyButton("Set")
+                set_button.activated.connect(
                     lambda _checked=False, current_id=var_id: self._send_setpoint(
                         current_id
                     )

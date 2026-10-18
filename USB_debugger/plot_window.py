@@ -2,10 +2,12 @@ from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import QMainWindow
+from shiboken6 import isValid
 
 from protocol_codec import (
     CanCyclicRatePayload,
     ControlModePayload,
+    CommandErrorPayload,
     ErrorFlagsPayload,
     LogPayload,
     MaskPayload,
@@ -31,6 +33,7 @@ from ui.connect_panel import SerialConnectDock
 from ui.basics_panel import BasicsDock
 from ui.setpoint_panel import SetpointDock
 from ui.can_panel import CanInterfaceDock
+from ui.busy_button import BusyButton
 
 
 class PlotWindow(QMainWindow):
@@ -40,11 +43,14 @@ class PlotWindow(QMainWindow):
     logging_confirmed = Signal(bool)
     definitions_received = Signal(object)
     connection_ready = Signal(object)
+    command_finished = Signal(object)
 
     def __init__(self):
         super().__init__()
 
-        self.on_command: Callable[[Packet], None] = lambda _pkt: None
+        self._command_sender = lambda _pkt: None
+        self._supports_completion = False
+        self.on_command: Callable[[Packet], None] = self._send_command
         self.start_connection_callback: Callable[[str], None] | None = None
         self.logging_toggle_callback: Callable[[bool], None] | None = None
         self.worker: Any | None = None
@@ -61,15 +67,42 @@ class PlotWindow(QMainWindow):
         self.logging_confirmed.connect(self._handle_logging_confirmed)
         self.definitions_received.connect(self._handle_definitions)
         self.connection_ready.connect(self._handle_connection_ready)
+        self.command_finished.connect(self._handle_command_finished)
 
-    def set_command_sender(self, sender: Callable[[Packet], None]):
-        self.on_command = sender
+    def set_command_sender(self, sender: Callable, *, supports_completion=False):
+        self._command_sender = sender
+        self._supports_completion = supports_completion
         self._refresh_command_targets()
+
+    def _send_command(self, packet):
+        button = BusyButton.current() if self._supports_completion else None
+        if button is not None:
+            button.begin_busy()
+        try:
+            if button is None:
+                self._command_sender(packet)
+            else:
+                self._command_sender(packet, completed=lambda success:
+                                     self.command_finished.emit((button, success)))
+        except (ValueError, TypeError, RuntimeError) as exc:
+            if button is not None:
+                button.end_busy()
+            self.enqueue_text(f"Could not send {packet.msg_type.name}: {exc}")
+
+    @Slot(object)
+    def _handle_command_finished(self, result):
+        button, _success = result
+        if isValid(button):
+            button.end_busy()
+
+    def _reset_busy_buttons(self):
+        for button in self.findChildren(BusyButton):
+            button.reset_busy()
 
     def set_start_connection_callback(self, callback: Callable[[str], None]):
         self.start_connection_callback = callback
         if hasattr(self, "connect_dock"):
-            self.connect_dock.on_connect = callback
+            self.connect_dock.on_connect = self._on_connect_clicked
 
     def set_logging_toggle_callback(self, callback: Callable[[bool], None]):
         self.logging_toggle_callback = callback
@@ -96,7 +129,7 @@ class PlotWindow(QMainWindow):
 
     def _build_ui(self):
         self.plot_panel = PlotPanel(self)
-        self.plot_panel.start_stop_button.clicked.connect(self._toggle_plot_logging)
+        self.plot_panel.start_stop_button.activated.connect(self._toggle_plot_logging)
         self.setCentralWidget(self.plot_panel)
 
         self.command_dock = CommandDock(self._handle_text_command, self)
@@ -163,6 +196,7 @@ class PlotWindow(QMainWindow):
             return
 
         if self.start_connection_callback is not None:
+            self.connect_dock.connect_btn.begin_busy()
             self._transport_ready = False
             self.plot_panel.clear_data()
             self.plot_panel.set_transport_connected(False)
@@ -172,13 +206,20 @@ class PlotWindow(QMainWindow):
             self.var_dock.begin_connection()
             self.setpoint_dock.begin_connection()
             self.can_dock.begin_connection()
-            self.start_connection_callback(port)
+            try:
+                self.start_connection_callback(port)
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.connect_dock.connect_btn.reset_busy()
+                self.connect_dock.set_connected(False)
+                self.enqueue_text(f"Connection failed: {exc}")
+                return
         if hasattr(self, "connect_dock"):
             self.connect_dock.set_connected(
                 True, simulator=(port == SIMULATOR_ENDPOINT)
             )
 
     def _on_disconnect_clicked(self):
+        self._reset_busy_buttons()
         if self.worker is not None:
             self.worker.stop()
             self.worker = None
@@ -202,6 +243,7 @@ class PlotWindow(QMainWindow):
                 simulator=bool(getattr(worker, "is_simulator", False)),
             )
         if worker is None and hasattr(self, "plot_panel"):
+            self._reset_busy_buttons()
             self._clear_definitions()
             self._transport_ready = False
             self.plot_panel.set_transport_connected(False)
@@ -228,6 +270,7 @@ class PlotWindow(QMainWindow):
         # been stopped or replaced by a newer connection.
         if disconnected_worker is not self.worker:
             return
+        self._reset_busy_buttons()
         self._clear_definitions()
         self._transport_ready = False
         self.worker = None
@@ -242,6 +285,7 @@ class PlotWindow(QMainWindow):
 
     @Slot(float)
     def _handle_transport_ready(self, sample_rate: float) -> None:
+        self.connect_dock.connect_btn.reset_busy()
         self.plot_panel.sample_rate = sample_rate
         self._transport_ready = True
         self.signal_dock.set_connected(True)
@@ -359,7 +403,6 @@ class PlotWindow(QMainWindow):
 
         elif packet.msg_type == MsgType.MSG_PID_REPLY and isinstance(packet.data, PIDPayload):
             if packet.data.kp is not None and packet.data.ki is not None and packet.data.kd is not None:
-                self.enqueue_text(str(packet.data))
                 self.pid_dock.set_pid_values(
                     packet.data.controller_id,
                     packet.data.kp,
@@ -369,16 +412,12 @@ class PlotWindow(QMainWindow):
 
         elif packet.msg_type == MsgType.MSG_VAR_REPLY and isinstance(packet.data, VarPayload):
             if packet.data.value is not None:
-                self.enqueue_text(str(packet.data))
                 self.var_dock.set_var_value(packet.data.var_id, packet.data.value)
                 self.setpoint_dock.set_var_value(packet.data.var_id, packet.data.value)
 
-        elif isinstance(packet.data, bytes):
-            # Keep acknowledgments and device errors visible in the terminal.
-            if packet.data:
-                self.enqueue_text(f"{packet.msg_type.name}: {packet.data.hex(' ')}")
-            else:
-                self.enqueue_text(packet.msg_type.name)
+        elif isinstance(packet.data, CommandErrorPayload):
+            # The session callback displays the command-specific explanation.
+            return
 
     def _toggle_plot_logging(self):
         if not self._transport_ready:

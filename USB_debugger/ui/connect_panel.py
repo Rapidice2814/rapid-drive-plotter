@@ -1,11 +1,11 @@
 from typing import Callable
 
+from ui.busy_button import BusyButton
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDockWidget,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -44,9 +44,9 @@ class SerialConnectDock(QDockWidget):
         self.status_label.setStyleSheet("color: red; font-weight: bold;")
 
         self.port_combo = QComboBox()
-        self.refresh_btn = QPushButton("Refresh Ports")
-        self.connect_btn = QPushButton("Connect")
-        self.disconnect_btn = QPushButton("Disconnect")
+        self.refresh_btn = BusyButton("Refresh Ports")
+        self.connect_btn = BusyButton("Connect")
+        self.disconnect_btn = BusyButton("Disconnect")
         self.save_log_checkbox = QCheckBox("Save telemetry to HDF5 log file")
         self.save_log_checkbox.setChecked(False)
         self.disconnect_btn.setEnabled(False)
@@ -59,9 +59,9 @@ class SerialConnectDock(QDockWidget):
         layout.addWidget(self.disconnect_btn)
         layout.addWidget(self.save_log_checkbox)
 
-        self.refresh_btn.clicked.connect(self.refresh_ports)
-        self.connect_btn.clicked.connect(self._connect)
-        self.disconnect_btn.clicked.connect(self._disconnect)
+        self.refresh_btn.activated.connect(self.refresh_ports)
+        self.connect_btn.activated.connect(self._connect)
+        self.disconnect_btn.activated.connect(self._disconnect)
 
         self.setWidget(panel)
         self.refresh_ports()

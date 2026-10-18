@@ -13,6 +13,8 @@ from protocol_definitions import (
     SOF2_BIN,
     ControlMode,
     MsgType,
+    CommandErrorCode,
+    ERROR_REPLY_TYPES,
 )
 
 
@@ -51,6 +53,40 @@ class VarPayload:
 class TextPayload:
     text: str
 
+@dataclass(frozen=True)
+class CommandErrorPayload:
+    """One complete error: request command, numeric reason, and driver text."""
+
+    command: int
+    code: int
+    message: str
+
+    @classmethod
+    def decode(cls, payload: bytes) -> CommandErrorPayload:
+        if not 4 <= len(payload) <= 163:
+            raise ValueError("Invalid command-error length")
+        command, code = struct.unpack_from("<BH", payload)
+        message = payload[3:].decode("utf-8")
+        if code == 0 or not message.strip() or "\0" in message:
+            raise ValueError("Invalid command-error code or message")
+        return cls(command, code, message)
+
+    def encode(self) -> bytes:
+        payload = struct.pack("<BH", self.command, self.code) + self.message.encode("utf-8")
+        self.decode(payload)
+        return payload
+
+    def __str__(self) -> str:
+        try:
+            command = MsgType(self.command).name
+        except ValueError:
+            command = f"command 0x{self.command:02X}"
+        try:
+            reason = CommandErrorCode(self.code).name
+        except ValueError:
+            reason = "UNKNOWN_ERROR"
+        return f"{command} rejected [{reason}, 0x{self.code:04X}]: {self.message}"
+
 @dataclass
 class StatePayload:
     state: int
@@ -88,7 +124,7 @@ class RawPacket:
 DecodedPayload: TypeAlias = (
     LogPayload | PIDPayload | TextPayload | VarPayload | DeviceInfo
     | StatePayload | MaskPayload | NodeIdPayload | CanCyclicTypePayload
-    | CanCyclicRatePayload | ErrorFlagsPayload | ControlModePayload
+    | CanCyclicRatePayload | ErrorFlagsPayload | ControlModePayload | CommandErrorPayload
 )
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
@@ -281,6 +317,12 @@ class ProtocolCodec:
         except ValueError:
             _LOG.warning("Unknown packet type: %s", raw_packet.msg_type_int)
             return None
+
+        if msg_type_int in ERROR_REPLY_TYPES:
+            try:
+                return Packet(msg_type_int, CommandErrorPayload.decode(raw_packet.payload_bytes))
+            except (ValueError, UnicodeError):
+                return Packet(msg_type_int, None)
 
         decoder = {
             MsgType.MSG_LOG_DATA: self._decode_log_payload,

@@ -1,4 +1,5 @@
-from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QGroupBox, QFormLayout, QDoubleSpinBox, QPushButton
+from ui.busy_button import BusyButton
+from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QGroupBox, QFormLayout, QDoubleSpinBox
 from PySide6.QtCore import Qt
 
 from protocol_codec import PIDPayload, Packet
@@ -36,12 +37,12 @@ class PidDock(QDockWidget):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        self.pid_refresh_btn = QPushButton("Read PID Values")
-        self.pid_refresh_btn.clicked.connect(self._request_all_pid_values)
+        self.pid_refresh_btn = BusyButton("Read PID Values")
+        self.pid_refresh_btn.activated.connect(self._request_all_pid_values)
         layout.addWidget(self.pid_refresh_btn)
 
-        self.pid_send_btn = QPushButton("Send Changes")
-        self.pid_send_btn.clicked.connect(self._send_all_pid_updates)
+        self.pid_send_btn = BusyButton("Send Changes")
+        self.pid_send_btn.activated.connect(self._send_all_pid_updates)
         layout.addWidget(self.pid_send_btn)
 
         for ctrl in self.controllers:

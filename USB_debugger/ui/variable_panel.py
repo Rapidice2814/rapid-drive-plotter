@@ -1,3 +1,4 @@
+from ui.busy_button import BusyButton
 from PySide6.QtWidgets import (
     QDockWidget,
     QWidget,
@@ -7,7 +8,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QLineEdit,
-    QPushButton,
     QScrollArea,
 )
 from PySide6.QtCore import Qt
@@ -69,8 +69,8 @@ class VarDock(QDockWidget):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        self.read_all_btn = QPushButton("Read Variables")
-        self.read_all_btn.clicked.connect(self._request_all_var_values)
+        self.read_all_btn = BusyButton("Read Variables")
+        self.read_all_btn.activated.connect(self._request_all_var_values)
         layout.addWidget(self.read_all_btn)
 
         scroll = QScrollArea()
@@ -102,7 +102,7 @@ class VarDock(QDockWidget):
             else:
                 raise ValueError(f"Unsupported var type: {var_type}")
 
-            send_btn = QPushButton("Send")
+            send_btn = BusyButton("Send")
 
             form.addRow("Value", value)
             form.addRow("", send_btn)
@@ -114,7 +114,7 @@ class VarDock(QDockWidget):
                 "type": var_type,
             }
 
-            send_btn.clicked.connect(
+            send_btn.activated.connect(
                 lambda _checked=False, vid=var_id: self._send_var_update(vid)
             )
 

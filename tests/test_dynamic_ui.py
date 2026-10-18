@@ -107,6 +107,174 @@ class DynamicUITests(unittest.TestCase):
         self.assertEqual(self.window.setpoint_dock.variable_ids, {})
         self.assertEqual(self.window.signal_dock.saved_names, ["tick"])
 
+    def prepare_busy_commands(self):
+        self.populate(fixture())
+        self.window._handle_transport_ready(7999.0)
+        self.callbacks = []
+
+        def sender(packet, completed=None):
+            self.sent.append(packet)
+            if completed is not None:
+                self.callbacks.append(completed)
+
+        self.window.set_command_sender(sender, supports_completion=True)
+        self.sent.clear()
+
+    def test_regular_replies_update_controls_without_terminal_noise(self):
+        from protocol_codec import Packet, PIDPayload, VarPayload, TextPayload
+        self.prepare_busy_commands()
+        terminal = self.window.command_dock.command_log
+        terminal.clear()
+        for packet in (Packet(MsgType.MSG_ACK, b""),
+                       Packet(MsgType.MSG_PID_REPLY, PIDPayload(0, 1.0, 2.0, 3.0)),
+                       Packet(MsgType.MSG_VAR_REPLY, VarPayload(0, 4.0))):
+            self.window.on_reply(packet)
+        self.assertEqual(terminal.toPlainText(), "")
+        self.assertEqual(self.window.pid_dock.pid_widgets[0]["kp"].value(), 1.0)
+        self.assertEqual(self.window.var_dock.var_widgets[0]["value"].value(), 4.0)
+        self.window.on_reply(Packet(MsgType.MSG_TEXT_REPLY, TextPayload("Warning: example fault")))
+        self.assertIn("Warning: example fault", terminal.toPlainText())
+
+    def test_clicked_button_stays_busy_until_reply_and_cannot_repeat(self):
+        self.prepare_busy_commands()
+        button = self.window.basics_dock.state_button
+        text = button.text()
+        button.click()
+        self.assertTrue(button.is_busy)
+        self.assertIn("Working", button.text())
+        self.assertFalse(button.isEnabled())
+        button.click()
+        self.assertEqual(len(self.callbacks), 1)
+        self.window.basics_dock.set_state(FOCState.FOC_STATE_IDLE)
+        self.assertFalse(button.isEnabled())
+        self.callbacks[0](True)
+        self.assertFalse(button.is_busy)
+        self.assertEqual(button.text(), text)
+        self.assertTrue(button.isEnabled())
+
+    def test_batch_button_waits_for_all_replies(self):
+        self.prepare_busy_commands()
+        dock = self.window.pid_dock
+        dock.set_driver_state(FOCState.FOC_STATE_RUN)
+        button = dock.pid_refresh_btn
+        button.click()
+        self.assertEqual(len(self.callbacks), 4)
+        for callback in self.callbacks[:-1]:
+            callback(True)
+            self.assertTrue(button.is_busy)
+        self.callbacks[-1](True)
+        self.assertFalse(button.is_busy)
+        self.assertTrue(button.isEnabled())
+
+    def test_polling_does_not_mark_a_button_busy(self):
+        self.prepare_busy_commands()
+        self.window.basics_dock.request_state()
+        self.assertFalse(self.callbacks)
+        self.assertFalse(self.window.basics_dock.state_button.is_busy)
+
+    def test_completion_preserves_new_state_restrictions(self):
+        self.prepare_busy_commands()
+        dock = self.window.basics_dock
+        dock.set_state(FOCState.FOC_STATE_IDLE)
+        button = dock.flash_save_button
+        button.click()
+        self.assertTrue(button.is_busy)
+        dock.set_state(FOCState.FOC_STATE_RUN)
+        self.callbacks[0](True)
+        self.assertFalse(button.is_busy)
+        self.assertFalse(button.isEnabled())
+
+    def test_worker_completion_is_delivered_on_gui_thread(self):
+        import threading
+        self.prepare_busy_commands()
+        button = self.window.basics_dock.state_button
+        button.click()
+        thread = threading.Thread(target=lambda: self.callbacks[0](False))
+        thread.start()
+        thread.join()
+        self.assertTrue(button.is_busy)
+        self.app.processEvents()
+        self.assertFalse(button.is_busy)
+        self.assertTrue(button.isEnabled())
+
+    def test_disconnect_and_late_reply_do_not_reenable_buttons(self):
+        self.prepare_busy_commands()
+        button = self.window.basics_dock.state_button
+        button.click()
+        self.window.set_worker(None)
+        self.assertFalse(button.is_busy)
+        self.assertFalse(button.isEnabled())
+        self.callbacks[0](False)
+        self.assertFalse(button.isEnabled())
+
+    def test_logging_button_keeps_updated_label_on_completion(self):
+        self.prepare_busy_commands()
+        button = self.window.plot_panel.start_stop_button
+        button.click()
+        self.assertTrue(button.is_busy)
+        self.window._handle_logging_confirmed(False)
+        self.assertIn("Start", button.text())
+        self.callbacks[0](True)
+        self.assertEqual(button.text(), "Start")
+
+    def test_connection_button_stays_busy_until_transport_ready(self):
+        self.window.set_worker(None)
+        self.window.set_start_connection_callback(lambda endpoint: self.window.set_worker(object()))
+        self.window._on_connect_clicked("test-port")
+        button = self.window.connect_dock.connect_btn
+        self.assertTrue(button.is_busy)
+        self.assertFalse(button.isEnabled())
+        self.window._handle_transport_ready(7999.0)
+        self.assertFalse(button.is_busy)
+
+    def test_failed_connection_clears_busy_and_keeps_error_visible(self):
+        self.window.set_worker(None)
+
+        def fail(endpoint):
+            raise OSError("Port unavailable")
+
+        self.window.set_start_connection_callback(fail)
+        self.window._on_connect_clicked("test-port")
+        button = self.window.connect_dock.connect_btn
+        self.assertFalse(button.is_busy)
+        self.assertTrue(button.isEnabled())
+        self.assertIn("Port unavailable", self.window.command_dock.command_log.toPlainText())
+
+    def test_local_send_failure_clears_busy_and_is_visible(self):
+        self.prepare_busy_commands()
+
+        def fail(packet, completed=None):
+            raise ValueError("Invalid command value")
+
+        self.window.set_command_sender(fail, supports_completion=True)
+        button = self.window.basics_dock.state_button
+        button.click()
+        self.assertFalse(button.is_busy)
+        self.assertTrue(button.isEnabled())
+        self.assertIn("Invalid command value", self.window.command_dock.command_log.toPlainText())
+
+    def test_operation_failed_flag_has_a_readable_label(self):
+        from protocol_definitions import FOCError
+        self.window.basics_dock.set_latched_errors(int(FOCError.FOC_ERROR_OPERATION_FAILED))
+        label = self.window.basics_dock.latched_errors_label.text()
+        self.assertIn("0x00008000", label)
+        self.assertIn("Operation failed", label)
+        self.assertNotIn("Unknown", label)
+
+    def test_clear_faults_refreshes_active_latched_and_state(self):
+        self.prepare_busy_commands()
+        button = self.window.basics_dock.clear_latched_errors_button
+        button.click()
+        self.assertEqual([packet.msg_type for packet in self.sent], [
+            MsgType.MSG_CLEAR_LATCHED_ERRORS, MsgType.MSG_GET_ACTIVE_ERRORS,
+            MsgType.MSG_GET_LATCHED_ERRORS, MsgType.MSG_GET_STATE,
+        ])
+        for callback in self.callbacks[:-1]:
+            callback(True)
+            self.assertTrue(button.is_busy)
+        self.callbacks[-1](True)
+        self.assertFalse(button.is_busy)
+
 
 if __name__ == "__main__":
     unittest.main()

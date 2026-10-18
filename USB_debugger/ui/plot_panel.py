@@ -9,12 +9,12 @@ from typing import TypeAlias
 
 import numpy as np
 import pyqtgraph as pg
+from ui.busy_button import BusyButton
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -86,12 +86,12 @@ class PlotPanel(QWidget):
 
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
-        self.start_stop_button = QPushButton("Start")
+        self.start_stop_button = BusyButton("Start")
         self.start_stop_button.setEnabled(False)
         self.start_stop_button.setToolTip("Start telemetry logging on the driver.")
         toolbar.addWidget(self.start_stop_button)
 
-        self.auto_follow_button = QPushButton("Auto follow")
+        self.auto_follow_button = BusyButton("Auto follow")
         self.auto_follow_button.setCheckable(True)
         self.auto_follow_button.setChecked(True)
         self.auto_follow_button.setToolTip(

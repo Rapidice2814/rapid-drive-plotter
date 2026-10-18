@@ -19,14 +19,16 @@ from config import (
     SIMULATOR_SAMPLES_PER_PACKET,
     SAMPLE_RATE,
 )
-from USB_debugger.protocol_codec import ProtocolCodec, RawPacket
+from USB_debugger.protocol_codec import ProtocolCodec, RawPacket, CommandErrorPayload
 from USB_debugger.device_definitions import Definitions, DeviceInfo, PAGE_HEADER
 from USB_debugger.protocol_definitions import (
     PROTOCOL_VERSION,
+    CommandErrorCode,
     CONTROL_MODE_LABELS,
     ControlMode,
     MsgType,
     FOCState,
+    FOCError,
 )
 
 
@@ -197,9 +199,11 @@ class SimulatorWorker:
         try:
             msg_type = MsgType(raw_packet.msg_type_int)
         except ValueError:
-            self._reply(MsgType.MSG_UNKNOWN_TYPE, b"")
+            self._error(MsgType.MSG_UNKNOWN_TYPE, raw_packet.msg_type_int,
+                        CommandErrorCode.UNKNOWN_COMMAND, "Unknown command.")
             return
 
+        self._check_errors()
         payload = raw_packet.payload_bytes
         if msg_type == MsgType.MSG_GET_DEVICE_INFO:
             if payload:
@@ -212,11 +216,13 @@ class SimulatorWorker:
                 return
             kind, start = struct.unpack("<BH", payload)
             if kind >= 3:
-                self._reply(MsgType.MSG_DEFINITIONS_ERROR, payload + bytes((1,)))
+                self._error(MsgType.MSG_DEFINITIONS_ERROR, msg_type,
+                            CommandErrorCode.UNKNOWN_DEFINITION_LIST, f"Unknown definition list {kind}.")
                 return
             entries = self.definitions.lists()[kind]
             if start >= len(entries) and not (start == 0 and not entries):
-                self._reply(MsgType.MSG_DEFINITIONS_ERROR, payload + bytes((2,)))
+                self._error(MsgType.MSG_DEFINITIONS_ERROR, msg_type,
+                            CommandErrorCode.DEFINITION_INDEX, f"Definition index {start} is out of range for list {kind}.")
                 return
             lines = self.definitions.text(kind).splitlines(keepends=True)[start:]
             text = bytearray()
@@ -239,12 +245,18 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._logging:
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.LOGGING_ACTIVE,
+                            "Stop logging before changing the signal mask.")
                 return
             supported = sum(1 << signal["bit"] for signal in self.definitions.signals)
             mask = int.from_bytes(payload, "little")
-            if mask & ~supported or mask.bit_count() > self.info.max_signals:
-                self._invalid_payload(msg_type)
+            if mask & ~supported:
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_MASK,
+                            "Signal mask contains unsupported bits.")
+                return
+            if mask.bit_count() > self.info.max_signals:
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.TOO_MANY_SIGNALS,
+                            "Too many signals selected.")
                 return
             self.codec.set_log_mask(payload)
             self._ack(msg_type)
@@ -267,7 +279,8 @@ class SimulatorWorker:
             controller_id = payload[0]
             gains = self._pids.get(controller_id)
             if gains is None:
-                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
+                            f"Unknown ID {payload[0]}.")
             else:
                 self._reply(MsgType.MSG_PID_REPLY, struct.pack("<Bfff", controller_id, *gains))
         elif msg_type == MsgType.MSG_SET_PID:
@@ -276,7 +289,8 @@ class SimulatorWorker:
                 return
             controller_id, kp, ki, kd = struct.unpack("<Bfff", payload)
             if controller_id not in self._pids:
-                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
+                            f"Unknown ID {payload[0]}.")
             else:
                 self._pids[controller_id] = (kp, ki, kd)
                 self._ack(msg_type)
@@ -292,7 +306,8 @@ class SimulatorWorker:
             var_id, raw_value = struct.unpack("<BI", payload)
             meta = self._var_meta(var_id)
             if meta is None:
-                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
+                            f"Unknown ID {payload[0]}.")
                 return
             self._variables[var_id] = ProtocolCodec.cast_u32_value(raw_value, meta["type"])
             self._ack(msg_type)
@@ -306,6 +321,7 @@ class SimulatorWorker:
                 MsgType.MSG_TEXT_REPLY,
                 self._text_response(text_command).encode("utf-8"),
             )
+            self._check_errors()
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_SET_STATE:
             if len(payload) != 1:
@@ -313,8 +329,19 @@ class SimulatorWorker:
                 return
             try:
                 state = FOCState(payload[0])
-                if state == FOCState.FOC_STATE_COUNT:
-                    raise ValueError("FOC_STATE_COUNT is not a runtime state")
+                if state in (FOCState.FOC_STATE_NONE, FOCState.FOC_STATE_COUNT):
+                    raise ValueError("Invalid runtime state")
+                if state == FOCState.FOC_STATE_ERROR and not self._latched_errors:
+                    self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
+                                "ERROR requires at least one latched fault.")
+                    return
+                if state != FOCState.FOC_STATE_ERROR and (self._active_errors or self._latched_errors):
+                    active = bool(self._active_errors)
+                    self._error(MsgType.MSG_ERROR, msg_type,
+                                CommandErrorCode.ACTIVE_FAULTS if active else CommandErrorCode.LATCHED_FAULTS,
+                                f"{'Active' if active else 'Latched'} faults prevent state changes: "
+                                f"0x{(self._active_errors if active else self._latched_errors):08X}.")
+                    return
                 previous_state = self._state
                 self._state = int(state)
                 if (
@@ -330,7 +357,8 @@ class SimulatorWorker:
                 ):
                     self._control_mode = ControlMode.CONTROL_MODE_OPENLOOP
             except ValueError:
-                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
+                            f"Invalid runtime state {payload[0]}.")
                 return
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_STATE:
@@ -343,12 +371,14 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._state != int(FOCState.FOC_STATE_RUN):
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
+                            f"Command is not allowed in state {FOCState(self._state).name}.")
                 return
             try:
                 self._control_mode = ControlMode(payload[0])
             except ValueError:
-                self._invalid_payload(msg_type)
+                self._error(MsgType.MSG_INVALID_PAYLOAD, msg_type, CommandErrorCode.OUT_OF_RANGE,
+                            f"Unsupported control mode {payload[0]}.")
                 return
             # The firmware resets the setpoints when changing control modes.
             for var_id in self._setpoint_ids():
@@ -359,7 +389,8 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._state != int(FOCState.FOC_STATE_RUN):
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE,
+                            f"Command is not allowed in state {FOCState(self._state).name}.")
                 return
             if self._control_mode is None:
                 self._control_mode = ControlMode.CONTROL_MODE_OPENLOOP
@@ -368,8 +399,12 @@ class SimulatorWorker:
                 bytes((int(self._control_mode),)),
             )
         elif msg_type == MsgType.MSG_SET_NODE_ID:
-            if len(payload) != 1 or payload[0] > 15:
+            if len(payload) != 1:
                 self._invalid_payload(msg_type)
+                return
+            if payload[0] > 15:
+                self._error(MsgType.MSG_INVALID_PAYLOAD, msg_type, CommandErrorCode.OUT_OF_RANGE,
+                            f"CAN node ID {payload[0]} is outside 0..15.")
                 return
             self._can_node_id = payload[0]
             self._ack(msg_type)
@@ -399,6 +434,7 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             self._latched_errors = 0
+            self._check_errors()
             self._ack(msg_type)
         elif msg_type == MsgType.MSG_SET_CAN_CYCLIC_RATE:
             if len(payload) != struct.calcsize("<BI"):
@@ -406,7 +442,8 @@ class SimulatorWorker:
                 return
             cyclic_type, rate_cycles = struct.unpack("<BI", payload)
             if cyclic_type not in self._can_cyclic_rates:
-                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
+                            f"Unknown ID {payload[0]}.")
                 return
             self._can_cyclic_rates[cyclic_type] = rate_cycles
             self._ack(msg_type)
@@ -416,7 +453,8 @@ class SimulatorWorker:
                 return
             cyclic_type = payload[0]
             if cyclic_type not in self._can_cyclic_rates:
-                self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+                self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
+                            f"Unknown ID {payload[0]}.")
                 return
             self._reply(
                 MsgType.MSG_CAN_CYCLIC_REPLY,
@@ -427,7 +465,8 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
+                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
                 return
             self._saved_variables = dict(self._variables)
             self._ack(msg_type)
@@ -436,7 +475,8 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
+                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
                 return
             self._variables = dict(self._saved_variables)
             self._ack(msg_type)
@@ -445,7 +485,8 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
+                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
                 return
             # Clearing flash restores its contents to factory defaults. Keep
             # the current live values unchanged until a FLASH_LOAD is requested.
@@ -456,15 +497,33 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             if self._state != int(FOCState.FOC_STATE_IDLE):
-                self._reply(MsgType.MSG_ERROR, b"")
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.MUST_BE_IDLE,
+                            f"Operation requires IDLE; current state is {FOCState(self._state).name}.")
                 return
             self._logging = False
             self._state = int(FOCState.FOC_STATE_BOOTLOADER)
             self._ack(msg_type)
         else:
-            # The simulator acknowledges commands it does not model, just as a
-            # test target should, without pretending to perform device I/O.
-            self._ack(msg_type)
+            self._error(MsgType.MSG_UNKNOWN_TYPE, msg_type, CommandErrorCode.UNKNOWN_COMMAND,
+                        "Unsupported request command.")
+
+    def _check_errors(self) -> None:
+        """Latch simulated active inputs and recover ERROR to STOP after clear."""
+        self._latched_errors |= self._active_errors
+        previous = self._state
+        if self._latched_errors:
+            self._state = int(FOCState.FOC_STATE_ERROR)
+        elif self._state == int(FOCState.FOC_STATE_ERROR):
+            self._state = int(FOCState.FOC_STATE_STOP)
+        if self._state != previous:
+            for var_id in self._setpoint_ids():
+                self._variables[var_id] = 0.0
+            self._control_mode = None
+
+    def _operation_failed(self) -> None:
+        """Inject the common one-shot operation fault for simulator testing."""
+        self._latched_errors |= int(FOCError.FOC_ERROR_OPERATION_FAILED)
+        self._check_errors()
 
     def _text_response(self, command: str) -> str:
         command = command.strip()
@@ -521,7 +580,8 @@ class SimulatorWorker:
     def _reply_var(self, var_id: int) -> None:
         meta = self._var_meta(var_id)
         if meta is None:
-            self._reply(MsgType.MSG_UNKNOWN_ID, b"")
+            self._error(MsgType.MSG_UNKNOWN_ID, MsgType.MSG_GET_VAR, CommandErrorCode.UNKNOWN_ID,
+                        f"Unknown variable ID {var_id}.")
             return
         raw_value = ProtocolCodec.cast_to_u32_value(self._variables[var_id], meta["type"])
         self._reply(MsgType.MSG_VAR_REPLY, struct.pack("<BI", var_id, raw_value))
@@ -530,7 +590,13 @@ class SimulatorWorker:
         self._reply(MsgType.MSG_ACK, b"")
 
     def _invalid_payload(self, command_type: MsgType) -> None:
-        self._reply(MsgType.MSG_INVALID_PAYLOAD, b"")
+        self._error(MsgType.MSG_INVALID_PAYLOAD, command_type, CommandErrorCode.INVALID_LENGTH,
+                    "Invalid command payload length.")
+
+    def _error(self, reply_type, command_type, code, message) -> None:
+        """Send the code and explanation together, attributed to one request."""
+        payload = CommandErrorPayload(int(command_type), int(code), message).encode()
+        self._reply(reply_type, payload)
 
     def _reply(self, msg_type: MsgType, payload: bytes) -> None:
         self._emit_bytes(self.codec.build_packet(RawPacket(int(msg_type), payload)))

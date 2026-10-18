@@ -1,10 +1,10 @@
+from ui.busy_button import BusyButton
 from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -45,8 +45,8 @@ class CommandDock(QDockWidget):
         output_header = QHBoxLayout()
         output_header.addWidget(QLabel("Output:"))
         output_header.addStretch()
-        self.clear_output_button = QPushButton("Clear output")
-        self.clear_output_button.clicked.connect(lambda: self.command_log.clear())
+        self.clear_output_button = BusyButton("Clear output")
+        self.clear_output_button.activated.connect(lambda: self.command_log.clear())
         output_header.addWidget(self.clear_output_button)
         layout.addLayout(output_header)
         layout.addWidget(self.command_log)

@@ -1,3 +1,4 @@
+from ui.busy_button import BusyButton
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -6,7 +7,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -46,16 +46,16 @@ class CanInterfaceDock(QDockWidget):
         node_current_layout.setContentsMargins(0, 0, 0, 0)
         node_current_layout.addWidget(self.node_id_label)
         node_current_layout.addStretch()
-        self.read_node_id_button = QPushButton("Read")
-        self.read_node_id_button.clicked.connect(self.request_node_id)
+        self.read_node_id_button = BusyButton("Read")
+        self.read_node_id_button.activated.connect(self.request_node_id)
         node_current_layout.addWidget(self.read_node_id_button)
         node_form.addRow("Current", node_current)
 
         self.node_id_input = QSpinBox()
         self.node_id_input.setRange(0, 15)
         self.node_id_input.setToolTip("0 is unassigned; valid CAN node IDs are 1-15.")
-        self.set_node_id_button = QPushButton("Set node ID")
-        self.set_node_id_button.clicked.connect(self.set_node_id)
+        self.set_node_id_button = BusyButton("Set node ID")
+        self.set_node_id_button.activated.connect(self.set_node_id)
         node_set = QWidget()
         node_set_layout = QHBoxLayout(node_set)
         node_set_layout.setContentsMargins(0, 0, 0, 0)
@@ -77,8 +77,8 @@ class CanInterfaceDock(QDockWidget):
             current_layout.setContentsMargins(0, 0, 0, 0)
             current_layout.addWidget(current_label)
             current_layout.addStretch()
-            read_button = QPushButton("Read")
-            read_button.clicked.connect(
+            read_button = BusyButton("Read")
+            read_button.activated.connect(
                 lambda _checked=False, kind=cyclic_type: self.request_cyclic_rate(kind)
             )
             current_layout.addWidget(read_button)
@@ -94,8 +94,8 @@ class CanInterfaceDock(QDockWidget):
                 f"Rate is in cycles of the {SAMPLE_RATE:g} Hz sample clock. "
                 "0 disables this cyclic message."
             )
-            set_button = QPushButton("Set rate")
-            set_button.clicked.connect(
+            set_button = BusyButton("Set rate")
+            set_button.activated.connect(
                 lambda _checked=False, kind=cyclic_type: self.set_cyclic_rate(kind)
             )
             rate_row = QWidget()
