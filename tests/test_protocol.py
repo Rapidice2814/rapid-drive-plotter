@@ -103,14 +103,14 @@ class CodecTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             h = Harness(directory)
             h.start(["tick"])
-            self.assertEqual(h.codec.mask_bytes, 5)
+            self.assertEqual(h.codec.mask_bytes, 6)
             before = h.codec.log_mask
-            h.codec.encode_packet(Packet(MsgType.MSG_SET_MASK, bytes(5)))
+            h.codec.encode_packet(Packet(MsgType.MSG_SET_MASK, bytes(6)))
             self.assertEqual(h.codec.log_mask, before)
             with self.assertRaises(ValueError):
                 h.codec.set_log_mask(bytes(8))
             with self.assertRaises(ValueError):
-                h.codec.set_log_mask(bytes(4) + b"\x80")
+                h.codec.set_log_mask(bytes(5) + b"\x80")
             with self.assertRaises(ValueError):
                 h.codec.set_log_mask(b"\xff\x01" + bytes(3))
 
@@ -126,7 +126,7 @@ class CodecTests(unittest.TestCase):
                   MsgType.MSG_DEVICE_INFO_REPLY, MsgType.MSG_GET_DEFINITIONS,
                   MsgType.MSG_DEFINITIONS_REPLY, MsgType.MSG_DEFINITIONS_ERROR, MsgType.MSG_LOG_DATA]
         self.assertEqual(list(map(int, prefix)), list(range(7)))
-        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x3C)))
+        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x3F)))
         self.assertEqual(int(MsgType.MSG_UNKNOWN_TYPE), 0xFA)
         self.assertEqual(int(MsgType.MSG_ERROR), 0xFF)
         self.assertFalse(hasattr(MsgType, "MSG_GET_VERSION"))
@@ -157,7 +157,7 @@ class DiscoveryTests(unittest.TestCase):
         other.start()
         self.assertTrue(other.session.cache_hit)
         self.assertNotIn(MsgType.MSG_GET_DEFINITIONS, [frame[2] for frame in other.sent])
-        self.assertEqual(other.codec.log_mask, b"\x01" + bytes(4))
+        self.assertEqual(other.codec.log_mask, b"\x01" + bytes(5))
 
     def test_device_info_poll_does_not_restart_discovery_or_logging(self):
         self.h.start(["tick"])
@@ -190,7 +190,7 @@ class DiscoveryTests(unittest.TestCase):
         other = Harness(self.directory, data)
         other.start()
         self.assertFalse(other.session.cache_hit)
-        self.assertEqual(other.codec.log_mask, b"\x00\x01" + bytes(3))
+        self.assertEqual(other.codec.log_mask, b"\x00\x01" + bytes(4))
         self.assertEqual(other.codec.variable_list[0]["name"], data["variables"][0]["name"])
         other.session.send(Packet(MsgType.MSG_GET_VAR, VarPayload(0, None)))
         other.session.send(Packet(MsgType.MSG_GET_PID, PIDPayload(0, None, None, None)))
@@ -260,20 +260,20 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_malformed_or_nonprogressing_page_fails(self):
         self.begin_manual()
-        self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY, PAGE_HEADER.pack(0, 0, 36, 0)))
+        self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY, PAGE_HEADER.pack(0, 0, 45, 0)))
         self.assertTrue(self.h.errors)
         self.assertFalse(self.h.ready)
 
     def test_wrong_page_index_fails(self):
         self.begin_manual()
         self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY,
-            PAGE_HEADER.pack(0, 1, 36, 1) + b"1\tf\twrong\n"))
+            PAGE_HEADER.pack(0, 1, 45, 1) + b"1\tf\twrong\n"))
         self.assertTrue(self.h.errors)
 
     def test_duplicate_rows_rejected_before_cache_write(self):
         self.begin_manual()
-        rows = b"".join(f"{index}\tu32\tduplicate\n".encode() for index in range(36))
-        self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY, PAGE_HEADER.pack(0, 0, 36, 36) + rows))
+        rows = b"".join(f"{index}\tu32\tduplicate\n".encode() for index in range(45))
+        self.h.session.receive(RawPacket(MsgType.MSG_DEFINITIONS_REPLY, PAGE_HEADER.pack(0, 0, 45, 45) + rows))
         for kind in (1, 2, 3, 4):
             text = self.h.simulator.definitions.text(kind).encode()
             count = self.h.simulator.info.counts[kind]
@@ -312,7 +312,7 @@ class DiscoveryTests(unittest.TestCase):
         states = []
         self.h.session.logging_changed = states.append
         self.h.session.send(Packet(MsgType.MSG_STOP_LOG, None))
-        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(5)))
+        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(6)))
         self.h.session.send(Packet(MsgType.MSG_START_LOG, None))
         self.h.session.receive(RawPacket(MsgType.MSG_ACK, b""))
         self.h.session.receive(error_reply(MsgType.MSG_SET_MASK, CommandErrorCode.LOGGING_ACTIVE))
@@ -369,7 +369,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_rejected_stop_cancels_mask_and_restart(self):
         self.h.start(["tick"])
         self.h.session.send(Packet(MsgType.MSG_STOP_LOG, None))
-        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(5)))
+        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(6)))
         self.h.session.send(Packet(MsgType.MSG_START_LOG, None))
         sent = len(self.h.sent)
         self.h.session.receive(error_reply(MsgType.MSG_STOP_LOG))
@@ -409,9 +409,9 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_mask_mismatch_and_malformed_reply_fail(self):
         self.h.start(["tick"])
-        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(5)))
+        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(6)))
         self.h.session.receive(RawPacket(MsgType.MSG_ACK, b""))
-        self.h.session.receive(RawPacket(MsgType.MSG_MASK_REPLY, b"\x01" + bytes(4)))
+        self.h.session.receive(RawPacket(MsgType.MSG_MASK_REPLY, b"\x01" + bytes(5)))
         self.assertTrue(self.h.errors)
 
     def test_logging_confirmation_and_single_command(self):

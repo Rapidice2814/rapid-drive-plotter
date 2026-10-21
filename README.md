@@ -14,7 +14,7 @@ python -m venv .venv
 ```
 
 The application package includes the simulator and requires no firmware source
-checkout. The application supports USB protocol versions 6, 7 and 8. It retains protocol
+checkout. The application supports USB protocol versions 6, 7, 8 and 9. It retains protocol
 3 command IDs and successful reply layouts, but uses structured errors containing
 the originating command, numeric reason, and driver-provided explanation.
 CAN catalog discovery requires version 7; protocol-6 connections remain supported
@@ -28,7 +28,8 @@ calibration progress. Source changes require stationary IDLE/ERROR and invalidat
 alignment and anti-cogging. Encoder calibration requires aligned,
 fault-free IDLE and confirmation that the unloaded shaft can rotate. STOP cancels
 measurement; success saves settings and requires anti-cogging recalibration.
-Only implemented sources are listed; HFI estimation is not supplied by this feature.
+Only implemented physical encoder sources are listed. Experimental HFI feedback
+uses a separate selector and still requires an aligned, healthy encoder.
 The firmware's flash format 2 rejects older settings records rather than
 interpreting their old layout. Back up settings before a firmware upgrade.
 
@@ -209,9 +210,11 @@ faults remain, rather than resuming RUN. The simulator supports the same
 ERROR-state permissions and preserves its active/latched fault masks.
 
 The plotter explicitly supports protocol 6 (three catalogs, no CAN discovery),
-protocol 7 (four catalogs), and protocol 8 (five catalogs and validated settings/
-targets). Protocol 7 adds a CAN cyclic count to device info and definition kind 3;
+protocol 7 (four catalogs), protocol 8 (five catalogs and validated settings/
+targets), and protocol 9 (experimental HFI feedback). Protocol 7 adds a CAN cyclic count to device info and definition kind 3;
 protocol 8 adds configuration count/metadata and the debug-write capability.
+Protocol 9 retains that discovery layout and adds feedback-source selection and
+HFI status. Older supported drivers do not receive these new commands.
 Unknown protocols are rejected. Wire layout, discovery
 grammar, or primitive encoding changes require explicit protocol support;
 firmware release/version numbers alone do not determine compatibility.
@@ -227,3 +230,33 @@ plotter source. The simulator's catalog lives in `Serial_Simulator/definitions.j
 not in production Python constants. Period tooltips use the reported driver tick
 rate; zero disables a cyclic message. A legacy driver or a driver advertising an
 empty CAN list shows an explanatory message while node-ID controls remain usable.
+
+## Experimental HFI comparison
+
+The HFI tab shows confirmed feedback, injection state, lock/validity, saliency
+current, electrical error and speed on protocol 9 drivers. Encoder remains the
+default. Injection is configured in Configuration → HFI while stationary IDLE;
+it only runs in RUN. Frequency settings use rad/s (1000 Hz = 6283.185 rad/s).
+The unloaded shaft must be clear and current/voltage limits reviewed before
+entering zero-current open-loop RUN: injection energizes the motor.
+
+The Signals list discovers `hfi.angle_electrical`,
+`hfi.angle_mechanical_unwrapped`, `hfi.speed_mechanical`, `hfi.error_electrical`,
+`hfi.error_mechanical`, `hfi.signal_amplitude`, `hfi.saliency_ratio`,
+`hfi.angle_axis_mod_pi` and `hfi.status`. Electrical/mechanical angles and errors
+are radians. Plot encoder and HFI angles together with error, quality and status
+before selecting HFI. Zero/unseeded or invalid estimates are not usable feedback.
+Status bits are enabled=1, active=2, seeded=4, locked=8, valid=16, selected=32.
+
+The source selector requires RUN and valid HFI lock; firmware additionally
+requires stationary zero-current open-loop operation and no faults/uploads.
+Selecting HFI changes commutation, speed and position feedback and requires an
+explicit confirmation. STOP/ERROR restores encoder feedback. A lost HFI lock
+while selected latches an HFI fault and disables motor output.
+
+HFI uses the encoder once for polarity/absolute mechanical origin and keeps it
+as an independent safety reference. This is low-speed experimental feedback,
+not encoder-free absolute positioning or sensorless startup. Actual accuracy,
+stability and sample-loop timing require motor-hardware testing. Simulator HFI
+values are synthetic UI fixtures, not a physical estimator or accuracy test.
+The firmware's `docs/hfi.md` describes the estimator, guards and wire payloads.

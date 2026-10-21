@@ -52,7 +52,7 @@ class CommandCompletionTests(unittest.TestCase):
         self.assertFalse(self.h.session.active)
 
     def test_mask_waits_for_readback_instead_of_ack(self):
-        mask = b"\x01" + bytes(4)
+        mask = b"\x01" + bytes(5)
         self.h.session.send(Packet(MsgType.MSG_SET_MASK, mask), completed=self.finished.append)
         self.h.session.receive(RawPacket(MsgType.MSG_ACK, b""))
         self.assertFalse(self.finished)
@@ -60,7 +60,7 @@ class CommandCompletionTests(unittest.TestCase):
         self.assertEqual(self.finished, [True])
 
     def test_rejected_mask_cancels_followup_callbacks(self):
-        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(5)), completed=self.finished.append)
+        self.h.session.send(Packet(MsgType.MSG_SET_MASK, bytes(6)), completed=self.finished.append)
         self.h.session.send(Packet(MsgType.MSG_START_LOG, None), completed=self.finished.append)
         self.h.session.receive(error_reply(MsgType.MSG_SET_MASK))
         self.assertEqual(self.finished, [False, False])

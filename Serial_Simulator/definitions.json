@@ -150,7 +150,16 @@
     {
       "type": "f",
       "name": "hfi.i_beta_l_filtered"
-    }
+    },
+    {"type":"f","name":"hfi.angle_axis_mod_pi"},
+    {"type":"f","name":"hfi.angle_electrical"},
+    {"type":"f","name":"hfi.angle_mechanical_unwrapped"},
+    {"type":"f","name":"hfi.speed_mechanical"},
+    {"type":"f","name":"hfi.error_electrical"},
+    {"type":"f","name":"hfi.error_mechanical"},
+    {"type":"f","name":"hfi.signal_amplitude"},
+    {"type":"f","name":"hfi.saliency_ratio"},
+    {"type":"u32","name":"hfi.status"}
   ],
   "variables": [],
   "pids": [
@@ -204,7 +213,7 @@
     {"id":13,"group_id":2,"group":"Controller","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"controller.current_PID_FF_enabled","label":"Current feed-forward","default":0},
     {"id":14,"group_id":3,"group":"HFI","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"hfi.hfi_enabled","label":"Enable HFI injection","default":0},
     {"id":15,"group_id":3,"group":"HFI","type":"f","minimum":"0","maximum":"17.320509","unit":"V","states":16384,"name":"hfi.injection_amplitude","label":"Injection amplitude","default":0.2},
-    {"id":16,"group_id":3,"group":"HFI","type":"f","minimum":"0.001","maximum":"20000","unit":"rad/s","states":16384,"name":"hfi.injection_omega","label":"Injection angular frequency","default":6283.185},
+    {"id":16,"group_id":3,"group":"HFI","type":"f","minimum":"3141.5927","maximum":"12566.371","unit":"rad/s","states":16384,"name":"hfi.injection_omega","label":"Injection angular frequency","default":6283.185},
     {"id":17,"group_id":4,"group":"Encoder","type":"f","minimum":"0.001","maximum":"17.320509","unit":"V","states":16384,"name":"encoder.calibration_voltage","label":"Calibration voltage","default":0.5}
   ],
   "can_cyclic": [

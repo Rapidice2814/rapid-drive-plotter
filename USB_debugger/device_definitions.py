@@ -32,7 +32,7 @@ class DeviceInfo:
     @classmethod
     def decode(cls, payload):
         if not payload or payload[0] not in SUPPORTED_PROTOCOL_VERSIONS:
-            raise ValueError("Incompatible protocol; this plotter supports USB protocols 6, 7 and 8")
+            raise ValueError("Incompatible protocol; this plotter supports USB protocols 6 through 9")
         layout = LEGACY_INFO_LAYOUT if payload[0] == 6 else INFO_LAYOUT
         if len(payload) != (34 if payload[0] >= 8 else layout.size):
             raise ValueError("Invalid device info length")

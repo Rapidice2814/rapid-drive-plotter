@@ -37,6 +37,8 @@ from ui.can_panel import CanInterfaceDock
 from ui.busy_button import BusyButton
 from ui.calibration_panel import CalibrationDock
 from ui.configuration_panel import ConfigurationDock
+from ui.hfi_panel import HfiDock
+from hfi_protocol import HfiInfo
 from ui.disabled_tooltips import DisabledTooltips
 from calibration_protocol import CalibrationInfo, CalibrationTable
 
@@ -145,6 +147,8 @@ class PlotWindow(QMainWindow):
             self.setpoint_dock.on_command = self.on_command
         if hasattr(self, "can_dock"):
             self.can_dock.on_command = self.on_command
+        if hasattr(self, "hfi_dock"):
+            self.hfi_dock.on_command = self.on_command
 
     def _build_ui(self):
         self.plot_panel = PlotPanel(self)
@@ -196,6 +200,8 @@ class PlotWindow(QMainWindow):
         self.configuration_dock = ConfigurationDock(
             lambda packet, completed=None: self._command_sender(packet, completed=completed), self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.configuration_dock)
+        self.hfi_dock = HfiDock(self.on_command, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.hfi_dock)
 
         self.setpoint_dock = SetpointDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.setpoint_dock)
@@ -212,6 +218,7 @@ class PlotWindow(QMainWindow):
         self.tabifyDockWidget(self.basics_dock, self.can_dock)
         self.tabifyDockWidget(self.basics_dock, self.calibration_dock)
         self.tabifyDockWidget(self.basics_dock, self.configuration_dock)
+        self.tabifyDockWidget(self.basics_dock, self.hfi_dock)
         self.basics_dock.visibilityChanged.connect(self._on_basics_visibility_changed)
         self.pid_dock.visibilityChanged.connect(self._on_pid_visibility_changed)
         self.var_dock.visibilityChanged.connect(self._on_variables_visibility_changed)
@@ -331,6 +338,7 @@ class PlotWindow(QMainWindow):
         self.setpoint_dock.transport_ready()
         self.can_dock.transport_ready()
         self.configuration_dock.set_connected(True)
+        self.hfi_dock.set_connected(True)
         self._refresh_visible_data_tabs()
 
     @Slot(object)
@@ -351,6 +359,7 @@ class PlotWindow(QMainWindow):
         self.setpoint_dock.set_validated_api(info.protocol >= 8)
         self.var_dock.set_debug_writes(info.debug_writes)
         self.configuration_dock.set_definitions(definitions.configuration)
+        self.hfi_dock.set_supported(info.protocol >= 9)
         self.can_dock.set_definitions(definitions.can_cyclic, info.sample_rate)
         self.calibration_dock.set_definitions(definitions.variables, definitions.pids, definitions.configuration)
         self.basics_dock.validated_targets = info.protocol >= 8
@@ -358,6 +367,8 @@ class PlotWindow(QMainWindow):
         self.basics_dock.set_version(*info.firmware)
 
     def _clear_definitions(self):
+        self.hfi_dock.set_connected(False)
+        self.hfi_dock.set_supported(False)
         self.configuration_dock.set_connected(False)
         self.configuration_dock.set_definitions(None)
         self.setpoint_dock.set_validated_api(False)
@@ -417,10 +428,14 @@ class PlotWindow(QMainWindow):
         ):
             self.basics_dock.set_state(packet.data.state)
             self.configuration_dock.set_state(packet.data.state)
+            self.hfi_dock.set_state(packet.data.state)
             self.calibration_dock.set_state(packet.data.state)
             self.pid_dock.set_driver_state(packet.data.state)
             self.var_dock.set_driver_state(packet.data.state)
             self.setpoint_dock.set_driver_state(packet.data.state)
+
+        elif packet.msg_type == MsgType.MSG_HFI_INFO_REPLY and isinstance(packet.data, HfiInfo):
+            self.hfi_dock.on_info(packet.data)
 
         elif packet.msg_type == MsgType.MSG_CONFIGURATION_REPLY and isinstance(packet.data, bytes):
             self.configuration_dock.on_reply(packet.data)

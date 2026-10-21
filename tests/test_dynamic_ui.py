@@ -52,6 +52,27 @@ class DynamicUITests(unittest.TestCase):
         self.assertEqual(self.window.var_dock.var_widgets, {})
         self.assertFalse(self.window.setpoint_dock.mode_buttons["speed"].isEnabled())
 
+    def test_hfi_controls_require_supported_connection_run_and_valid_lock(self):
+        from hfi_protocol import HfiInfo
+        self.populate(fixture())
+        dock = self.window.hfi_dock
+        self.assertFalse(dock.apply.isEnabled())
+        dock.set_connected(True)
+        dock.source.setCurrentIndex(1)
+        dock.set_state(FOCState.FOC_STATE_RUN)
+        self.assertFalse(dock.apply.isEnabled())
+        dock.on_info(HfiInfo(0, 31, 1, 0.04, 0.01, 0))
+        self.assertTrue(dock.apply.isEnabled())
+        self.assertIn("Encoder", dock.status.text())
+        dock.set_state(FOCState.FOC_STATE_STOP)
+        self.assertFalse(dock.apply.isEnabled())
+        dock.set_supported(False)
+        self.assertFalse(dock.read.isEnabled())
+        self.assertIn("protocol 9", dock.status.text())
+        dock.set_connected(False)
+        self.assertIsNone(dock.info)
+        self.assertFalse(dock.timer.isActive())
+
     def test_basics_controls_scroll_inside_small_dock(self):
         from PySide6.QtCore import QPoint
         from PySide6.QtWidgets import QGroupBox
@@ -89,7 +110,7 @@ class DynamicUITests(unittest.TestCase):
         self.assertTrue(self.window.basics_dock.version_reply_timeout_timer.isActive())
         definitions = definitions_from(fixture())
         counts = tuple(map(len, definitions.lists()))
-        info = DeviceInfo(PROTOCOL_VERSION, (0, 3, 1), counts, 5, 8, 7999, 123, 1019, definitions.fingerprint())
+        info = DeviceInfo(PROTOCOL_VERSION, (0, 3, 1), counts, 6, 8, 7999, 123, 1019, definitions.fingerprint())
         self.window.on_reply(Packet(MsgType.MSG_DEVICE_INFO_REPLY, info))
         self.assertEqual(self.window.basics_dock.version_label.text(), "0.3.1")
         self.assertFalse(self.window.basics_dock.version_reply_timeout_timer.isActive())
@@ -99,10 +120,10 @@ class DynamicUITests(unittest.TestCase):
         data["variables"].reverse()
         data["pids"].reverse()
         definitions = self.populate(data)
-        self.assertEqual(len(self.window.signal_dock.signal_checkboxes), 36)
+        self.assertEqual(len(self.window.signal_dock.signal_checkboxes), 45)
         self.assertEqual(len(self.window.pid_dock.pid_widgets), 4)
         self.assertEqual(len(self.window.var_dock.var_widgets), 0)
-        self.assertEqual(self.window.signal_dock.mask_bytes, 5)
+        self.assertEqual(self.window.signal_dock.mask_bytes, 6)
         self.assertFalse(self.window.signal_dock.read_mask_button.isEnabled())
         self.window._handle_transport_ready(7999.0)
         dock = self.window.setpoint_dock

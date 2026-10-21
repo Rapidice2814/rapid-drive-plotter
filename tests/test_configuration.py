@@ -42,7 +42,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(all(value == 0 for value in self.h.simulator._targets.values()))
 
     def test_schema_discovery_roundtrip_cache_and_bounds_in_fingerprint(self):
-        self.assertEqual(self.h.session.info.protocol, 8)
+        self.assertEqual(self.h.session.info.protocol, 9)
         self.assertEqual(len(self.h.session.info.encode()), 34)
         definitions = self.h.session.definitions
         self.assertEqual(parse_rows(4, definitions.text(4)),

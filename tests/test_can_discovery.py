@@ -41,7 +41,7 @@ class CanDiscoveryTests(unittest.TestCase):
         h = Harness(self.directory, data)
         h.start(["tick"])
         self.assertFalse(h.errors)
-        self.assertEqual(h.session.info.counts, (37, 1, 5, 70, 18))
+        self.assertEqual(h.session.info.counts, (46, 1, 5, 70, 18))
         self.assertEqual(h.session.definitions.can_cyclic[69], {"id": 69, "name": "Additional cyclic message 069"})
         requests = [h.codec.extract_packets(bytearray(frame))[0] for frame in h.sent]
         pages = [r for r in requests if r.msg_type_int == MsgType.MSG_GET_DEFINITIONS]

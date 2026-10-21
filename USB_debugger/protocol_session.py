@@ -9,9 +9,11 @@ from device_definitions import DeviceInfo, Definitions, DefinitionCache, Selecti
 from protocol_codec import Packet, CommandErrorPayload, EncoderInfoPayload
 from calibration_protocol import CalibrationInfo, CalibrationTable
 from configuration_protocol import decode_configuration
+from hfi_protocol import HfiInfo
 from protocol_definitions import MsgType, ERROR_REPLY_TYPES
 
 REPLIES = {
+    MsgType.MSG_GET_HFI_INFO: MsgType.MSG_HFI_INFO_REPLY,
     MsgType.MSG_GET_CONFIGURATION: MsgType.MSG_CONFIGURATION_REPLY,
     MsgType.MSG_GET_TARGETS: MsgType.MSG_TARGETS_REPLY,
     MsgType.MSG_GET_CALIBRATION_INFO: MsgType.MSG_CALIBRATION_INFO_REPLY,
@@ -249,6 +251,8 @@ class ProtocolSession:
                     raise ValueError("Malformed targets reply")
                 if expected == MsgType.MSG_ENCODER_INFO_REPLY:
                     EncoderInfoPayload.decode(raw.payload_bytes)
+                if expected == MsgType.MSG_HFI_INFO_REPLY:
+                    HfiInfo.decode(raw.payload_bytes)
                 if expected == MsgType.MSG_CALIBRATION_INFO_REPLY:
                     info_cal = CalibrationInfo.decode(raw.payload_bytes)
                     if bytes((info_cal.kind,)) != self.pending.payload_bytes:

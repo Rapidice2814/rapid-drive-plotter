@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias
 from device_definitions import DeviceInfo
 from calibration_protocol import CalibrationInfo, CalibrationTable
+from hfi_protocol import HfiInfo
 
 from protocol_definitions import (
     SOF1_BIN,
@@ -184,6 +185,7 @@ DecodedPayload: TypeAlias = (
     | CanCyclicRatePayload | ErrorFlagsPayload | ControlModePayload | CommandErrorPayload
     | EncoderInfoPayload | EncoderSourcePayload | EncoderCorrectionPayload
     | CalibrationInfo | CalibrationTable
+    | HfiInfo
 )
 PacketData: TypeAlias = DecodedPayload | bytes | None
 
@@ -394,6 +396,11 @@ class ProtocolCodec:
                 return Packet(msg_type_int, CommandErrorPayload.decode(raw_packet.payload_bytes))
             except (ValueError, UnicodeError):
                 return Packet(msg_type_int, None)
+        if msg_type_int == MsgType.MSG_HFI_INFO_REPLY:
+            try:
+                return Packet(msg_type_int, HfiInfo.decode(raw_packet.payload_bytes))
+            except ValueError:
+                return None
 
         if msg_type_int in (MsgType.MSG_CONFIGURATION_REPLY, MsgType.MSG_TARGETS_REPLY):
             return Packet(MsgType(msg_type_int), raw_packet.payload_bytes)
@@ -463,6 +470,7 @@ class ProtocolCodec:
                 MsgType.MSG_GET_CONTROL_MODE,
                 MsgType.MSG_GET_ENCODER_INFO,
                 MsgType.MSG_GET_TARGETS,
+                MsgType.MSG_GET_HFI_INFO,
             }
             if msg_type not in empty_payload_types:
                 raise ValueError(f"{msg_type.name} requires a payload")
