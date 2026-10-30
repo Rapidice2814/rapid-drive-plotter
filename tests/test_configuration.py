@@ -42,7 +42,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(all(value == 0 for value in self.h.simulator._targets.values()))
 
     def test_schema_discovery_roundtrip_cache_and_bounds_in_fingerprint(self):
-        self.assertEqual(self.h.session.info.protocol, 9)
+        self.assertEqual(self.h.session.info.protocol, 11)
         self.assertEqual(len(self.h.session.info.encode()), 34)
         definitions = self.h.session.definitions
         self.assertEqual(parse_rows(4, definitions.text(4)),
@@ -112,15 +112,15 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_new_groups_and_fields_need_no_plotter_catalog_changes(self):
         data = fixture()
-        data["configuration"].append(dict(data["configuration"][0], id=18, group_id=9, group="Future group",
+        data["configuration"].append(dict(data["configuration"][0], id=15, group_id=9, group="Future group",
                                           name="future.extra", label="New setting", default=1))
         h = Harness(self.directory, data)
         h.start()
         self.assertEqual(h.codec.configuration_list[-1]["name"], "future.extra")
-        h.session.send(Packet(MsgType.MSG_SET_CONFIGURATION, encode_configuration(h.codec.configuration_list, 9, {18: 2})))
+        h.session.send(Packet(MsgType.MSG_SET_CONFIGURATION, encode_configuration(h.codec.configuration_list, 9, {15: 2})))
         h.drain()
         self.assertFalse(h.errors)
-        self.assertEqual(h.simulator._configuration[18], 2)
+        self.assertEqual(h.simulator._configuration[15], 2)
 
     def test_schema_validation_and_float32_boundary_encoding(self):
         entry = dict(self.h.codec.configuration_list[0], minimum="100000005e-11")
@@ -159,7 +159,7 @@ class ConfigurationUITests(unittest.TestCase):
         self.addCleanup(dock.deleteLater)
         dock.set_definitions(entries)
         dock.set_connected(True)
-        self.assertEqual(len(dock.widgets), 18)
+        self.assertEqual(len(dock.widgets), 15)
         for callback in list(callbacks):
             callback(True)
         self.app.processEvents()

@@ -44,6 +44,33 @@ class EncoderProtocolTests(unittest.TestCase):
         self.command(MsgType.MSG_SET_ENCODER_SOURCE, EncoderSourcePayload(0))
         self.assertEqual(driver._encoder_source, 7)
 
+    def test_four_physical_sources_are_discovered_and_selection_is_saved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            h = Harness(directory)
+            h.start(["tick"])
+
+            def send(command, payload=None):
+                h.session.send(Packet(command, payload))
+                h.drain()
+                self.assertFalse(h.errors)
+
+            send(MsgType.MSG_GET_ENCODER_INFO)
+            sources = h.simulator._encoder_sources
+            self.assertEqual([source.source_id for source in sources], [0, 1, 2, 3])
+            self.assertIn("quadrature", sources[0].name)
+            self.assertIn("SPI DMA", sources[1].name)
+            self.assertIn("External", sources[2].name)
+            self.assertIn("quadrature", sources[3].name)
+            send(MsgType.MSG_SET_ENCODER_SOURCE, EncoderSourcePayload(3))
+            self.assertEqual(h.simulator._encoder_source, 3)
+            self.assertFalse(h.simulator._encoder_flags & 7)
+            send(MsgType.MSG_FLASH_SAVE)
+            send(MsgType.MSG_SET_ENCODER_SOURCE, EncoderSourcePayload(0))
+            send(MsgType.MSG_FLASH_LOAD)
+            self.assertEqual(h.simulator._encoder_source, 3)
+            send(MsgType.MSG_SET_STATE, StatePayload(FOCState.FOC_STATE_RUN))
+            self.assertTrue(h.rejections)  # A source change never manufactures alignment.
+
     def test_calibration_simulated_progress_completion_and_save(self):
         self.command(MsgType.MSG_SET_STATE, StatePayload(FOCState.FOC_STATE_ENCODER_CALIBRATION))
         self.assertEqual(self.h.simulator._state, FOCState.FOC_STATE_ENCODER_CALIBRATION)
@@ -52,8 +79,8 @@ class EncoderProtocolTests(unittest.TestCase):
         self.assertEqual(self.h.simulator._state, FOCState.FOC_STATE_STOP)
         self.assertEqual(self.h.simulator._encoder_stage, 6)
         self.assertEqual(self.h.simulator._encoder_progress, 1000)
-        self.assertEqual(self.h.simulator._encoder_flags, 15)
-        self.assertEqual(self.h.simulator._saved_encoder[1], 15)
+        self.assertEqual(self.h.simulator._encoder_flags, 13)  # Valid/aligned, explicitly disabled.
+        self.assertEqual(self.h.simulator._saved_encoder[1], 13)  # Disabled state is saved too.
 
     def test_cancellation_does_not_create_valid_correction(self):
         self.command(MsgType.MSG_SET_STATE, StatePayload(FOCState.FOC_STATE_ENCODER_CALIBRATION))

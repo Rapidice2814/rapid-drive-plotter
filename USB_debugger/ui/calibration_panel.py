@@ -1,5 +1,6 @@
 """Calibration progress and explicitly downloaded, editable compensation tables."""
 import math
+import time
 import struct
 import zlib
 from typing import Callable
@@ -8,7 +9,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, QLabel,
                                QMessageBox, QProgressBar, QPushButton, QScrollArea,
-                               QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget, QAbstractItemView, QHeaderView)
 from calibration_protocol import CalibrationInfo, CalibrationTable, CHUNK, ERROR_NAMES, STAGES
 from protocol_codec import Packet, StatePayload, VarPayload, PIDPayload
@@ -17,7 +18,7 @@ from configuration_protocol import decode_configuration
 
 
 class TableEditor(QWidget):
-    """A numeric table plus a draggable value line for the selected plotted point."""
+    """Editable calibration table with a radial deviation map."""
 
     def __init__(self, kind: int):
         super().__init__()
@@ -28,32 +29,62 @@ class TableEditor(QWidget):
         self.selected = (0, 0)
         layout = QVBoxLayout(self)
         self.plot = pg.PlotWidget()
-        self.plot.setFixedHeight(220)
-        self.plot.setLabel("bottom", "Mechanical angle", units="deg")
-        self.plot.setLabel("left", "Correction" if kind == 0 else "Compensation current", units="rad" if kind == 0 else "A")
+        self.plot.setMinimumHeight(340)
+        self.plot.setMaximumHeight(440)
+        self.plot.setAspectLocked(True)
+        self.plot.hideAxis("bottom")
+        self.plot.hideAxis("left")
+        self.plot.setMouseEnabled(x=False, y=False)
+        self.plot.hideButtons()
+        self.plot.setMenuEnabled(False)
+        self.plot.setRange(xRange=(-1.8, 1.8), yRange=(-1.8, 1.8), padding=0)
+        self.default_span = 0.02 if kind == 0 else 1.0
+        self.radial_span = self.default_span
+        angles = [i * math.tau / 180 for i in range(181)]
+        self.grid_labels = []
+        for radius in (0.5, 1.0, 1.5):
+            self.plot.plot([radius * math.cos(t) for t in angles],
+                           [radius * math.sin(t) for t in angles],
+                           pen=pg.mkPen("#aab7c4" if radius == 1 else "#48515c",
+                                        width=2 if radius == 1 else 1,
+                                        style=Qt.PenStyle.SolidLine if radius == 1 else Qt.PenStyle.DashLine))
+            label = pg.TextItem(anchor=(0, 0.5), color="#b7c4d1", fill="#17212b")
+            label.setPos(radius * math.cos(math.pi / 6), radius * 0.5)
+            self.plot.addItem(label)
+            self.grid_labels.append(label)
+        for index in range(8):
+            theta = index * math.pi / 4
+            self.plot.plot([0, 1.5 * math.cos(theta)], [0, 1.5 * math.sin(theta)], pen="#38414b")
+            label = pg.TextItem(f"{theta:.2f} rad", color="#b7c4d1", anchor=(0.5, 0.5))
+            label.setPos(1.65 * math.cos(theta), 1.65 * math.sin(theta))
+            self.plot.addItem(label)
         self.plot.addLegend()
         self.curves = [self.plot.plot(pen=pg.mkPen(color, width=2), symbol="o", symbolSize=4, symbolBrush=color, symbolPen=color,
                                       name=name) for color, name in
-                       (("c", "Correction"),) if kind == 0]
+                       (("c", "Inferred encoder error"),) if kind == 0]
         if kind:
             self.curves = [self.plot.plot(pen=pg.mkPen(color, width=2), symbol="o", symbolSize=4, symbolBrush=color, symbolPen=color, name=name)
                            for color, name in (("c", "Forward"), ("m", "Reverse"))]
         for channel, curve in enumerate(self.curves):
-            curve.sigPointsClicked.connect(lambda _curve, points, _event, c=channel: self.select_point(points[0].index(), c))
-        self.value_line = pg.InfiniteLine(angle=0, movable=True, pen="y")
-        self.value_line.sigPositionChangeFinished.connect(self._line_edited)
-        self.plot.addItem(self.value_line)
-        self.value_line.hide()
+            curve.sigPointsClicked.connect(lambda _curve, points, _event, c=channel:
+                                            self.select_point(points[0].index() % self.table.rowCount(), c))
+        self.radial_handle = pg.TargetItem(movable=True, pen="y", size=14)
+        self.radial_handle.sigPositionChangeFinished.connect(self._radial_edited)
+        self.plot.addItem(self.radial_handle)
+        self.radial_handle.hide()
         layout.addWidget(self.plot)
         self.summary = QLabel("Read a table from the driver to begin.")
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
-        help_label = QLabel("Select a table cell or plotted point, then drag the yellow value line to edit.\nEncoder angles use raw sensor coordinates; anti-cogging uses aligned mechanical coordinates.")
+        help_label = QLabel("0 rad is right; angles increase counterclockwise. Select a cell or point, then drag the yellow handle radially to edit.\n" +
+                            ("Solid circle = ideal encoder. Error = negative correction, inferred from the table; radial deviation is exaggerated, not physical magnet shape. Bins use raw sensor angle."
+                             if kind == 0 else "Solid circle = zero current. Positive goes outside; negative inside. Both directions share one scale. Bins use aligned mechanical angle.") +
+                            "\nDefault range is fixed for motor comparison; larger data expands it in ×2 steps. Compare the displayed ranges and RMS/peak values.")
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         self.table = QTableWidget(0, 3 if kind == 0 else 4)
-        self.table.setHorizontalHeaderLabels(["Bin", "Angle (deg)", "Correction (rad)"] if kind == 0 else
-                                            ["Bin", "Angle (deg)", "Forward (A)", "Reverse (A)"])
+        self.table.setHorizontalHeaderLabels(["Bin", "Angle (rad)", "Correction (rad)"] if kind == 0 else
+                                            ["Bin", "Angle (rad)", "Forward (A)", "Reverse (A)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setMaximumHeight(180)
         self.table.setMinimumHeight(140)
@@ -61,6 +92,7 @@ class TableEditor(QWidget):
         self.table.cellChanged.connect(self._cell_edited)
         self.table.currentCellChanged.connect(self._cell_selected)
         layout.addWidget(self.table)
+        self.redraw()
 
     def set_values(self, values: list[float]):
         self._updating = True
@@ -69,7 +101,7 @@ class TableEditor(QWidget):
         bins = len(values) // channels
         self.table.setRowCount(bins)
         for row in range(bins):
-            for column, value in enumerate([str(row), f"{row * 360 / bins:.3f}"] +
+            for column, value in enumerate([str(row), f"{row * math.tau / bins:.5f}"] +
                                            [f"{values[row * channels + c]:.8g}" for c in range(channels)]):
                 item = QTableWidgetItem(value)
                 if column < 2:
@@ -77,21 +109,39 @@ class TableEditor(QWidget):
                 self.table.setItem(row, column, item)
         self._updating = False
         self.dirty = False
-        self.value_line.hide()
+        self.radial_handle.hide()
+        self.selected = (0, 0)
         self.redraw()
 
     def redraw(self):
         channels = self.kind + 1
         bins = len(self.values) // channels
+        peak = max((abs(v) for v in self.values), default=0.0)
+        self.radial_span = self.default_span
+        while peak > self.radial_span:
+            self.radial_span *= 2
+        for label, fraction in zip(self.grid_labels, (-1, 0, 1)):
+            value = fraction * self.radial_span
+            label.setText(f"{value:+.3g} rad" if self.kind == 0 else f"{value:+.3g} A")
         for c, curve in enumerate(self.curves):
-            curve.setData([i * 360 / bins for i in range(bins)], self.values[c::channels])
+            points = [self._radial_point(i, self.values[i * channels + c]) for i in range(bins)]
+            if points:
+                points.append(points[0])
+            curve.setData([p[0] for p in points], [p[1] for p in points])
+        self._position_handle()
+        if not self.values:
+            self.summary.setText("Read a table from the driver to begin.")
         if self.values:
             rms = math.sqrt(sum(v * v for v in self.values) / len(self.values))
             peak = max(abs(v) for v in self.values)
             unit = "rad" if self.kind == 0 else "A"
             text = f"{'Unsaved local edits. ' if self.dirty else ''}RMS {rms:.6g} {unit}; peak |value| {peak:.6g} {unit}."
-            if self.kind == 0:
-                text += f" Peak {math.degrees(peak):.4g}°."
+            span = f"{self.radial_span:.3g} rad" if self.kind == 0 else f"{self.radial_span:g} A"
+            text += f" Radial range ±{span} ({'auto-expanded' if self.radial_span > self.default_span else 'default scale'})."
+            if self.kind == 1:
+                differences = [self.values[i] - self.values[i + 1] for i in range(0, len(self.values), 2)]
+                disagreement = math.sqrt(sum(d*d for d in differences) / len(differences))
+                text += f" Forward/reverse difference RMS {disagreement:.5g} A; peak {max(abs(d) for d in differences):.5g} A."
             self.summary.setText(text)
 
     def select_point(self, row: int, channel: int):
@@ -101,8 +151,8 @@ class TableEditor(QWidget):
         if row < 0 or column < 2 or not self.values:
             return
         self.selected = (row, column - 2)
-        self.value_line.setValue(self.values[row * (self.kind + 1) + column - 2])
-        self.value_line.show()
+        self._position_handle()
+        self.radial_handle.show()
 
     def _cell_edited(self, row: int, column: int):
         if self._updating or column < 2:
@@ -123,14 +173,35 @@ class TableEditor(QWidget):
             return
         self.values[index] = value
         self.dirty = True
-        self.value_line.setValue(value)
         self.redraw()
 
-    def _line_edited(self):
+    def _radial_point(self, row, value):
+        theta = row * math.tau / (len(self.values) // (self.kind + 1))
+        deviation = -value if self.kind == 0 else value
+        radius = 1.0 + 0.5 * deviation / self.radial_span
+        return radius * math.cos(theta), radius * math.sin(theta)
+
+    def _position_handle(self):
         row, channel = self.selected
+        index = row * (self.kind + 1) + channel
+        if 0 <= index < len(self.values):
+            self.radial_handle.setPos(*self._radial_point(row, self.values[index]))
+
+    def _radial_edited(self):
+        row, channel = self.selected
+        bins = len(self.values) // (self.kind + 1)
+        if not bins:
+            return
+        theta = row * math.tau / bins
+        pos = self.radial_handle.pos()
+        radius = pos.x() * math.cos(theta) + pos.y() * math.sin(theta)
+        value = (radius - 1.0) * 2 * self.radial_span
+        if self.kind == 0:
+            value = -value
         item = self.table.item(row, channel + 2)
         if item is not None:
-            item.setText(f"{self.value_line.value():.8g}")
+            item.setText(f"{value:.8g}")
+        self._position_handle()
 
 
 class CalibrationDock(QDockWidget):
@@ -174,6 +245,17 @@ class CalibrationDock(QDockWidget):
         self.completed.connect(self._completion)
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        self.routine_result = QLabel("No test/calibration result read yet.")
+        self.routine_result.setWordWrap(True)
+        self.routine_result.setTextFormat(Qt.TextFormat.PlainText)
+        self.routine_result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        result_group = QGroupBox("Last test / calibration result")
+        result_layout = QVBoxLayout(result_group)
+        result_layout.addWidget(self.routine_result)
+        self.read_result_button = QPushButton("Read result and encoder diagnostics")
+        self.read_result_button.clicked.connect(self.read_routine_result)
+        result_layout.addWidget(self.read_result_button)
+        layout.addWidget(result_group)
         encoder_group = basics.encoder_source_combo.parentWidget()
         layout.addWidget(encoder_group)
         basics.encoder_calibrate_button.hide()
@@ -181,13 +263,18 @@ class CalibrationDock(QDockWidget):
         basics.encoder_correction_button.hide()
         basics.encoder_status_label.hide()
         self.tabs = QTabWidget()
+        self.anticog_pid_id = None
+        self.anticog_gain_inputs = []
         self._build_motor_setup()
         self.editors: list[TableEditor] = []
         self.rounds: list[QSpinBox] = []
         self.progress: list[QProgressBar] = []
+        self.time_labels: list[QLabel] = []
+        self.timing = [None, None]
         self.status: list[QLabel] = []
         self.buttons: list[list[QPushButton]] = []
         self.enabled: list[QCheckBox] = []
+        self.enable_pending = [False, False]
         for kind, name in enumerate(("Encoder", "Anti-cogging")):
             page = QWidget()
             page_layout = QVBoxLayout(page)
@@ -195,7 +282,7 @@ class CalibrationDock(QDockWidget):
             row.addWidget(QLabel("Revolutions per direction"))
             rounds = QSpinBox()
             rounds.setRange(1, 8)
-            rounds.setValue(3)
+            rounds.setValue(1)
             row.addWidget(rounds)
             self.rounds.append(rounds)
             start = QPushButton("Calibrate")
@@ -205,10 +292,32 @@ class CalibrationDock(QDockWidget):
             stop.clicked.connect(lambda: basics._send_state(FOCState.FOC_STATE_STOP))
             row.addWidget(stop)
             page_layout.addLayout(row)
+            if kind == 1:
+                gains_row = QHBoxLayout()
+                for label, default in (("Kp", 10.0), ("Ki", 20.0), ("Kd", 0.2)):
+                    gains_row.addWidget(QLabel(label))
+                    field = QDoubleSpinBox()
+                    field.setRange(0, 10000)
+                    field.setDecimals(6)
+                    field.setValue(default)
+                    self.anticog_gain_inputs.append(field)
+                    gains_row.addWidget(field)
+                self.anticog_pid_read = QPushButton("Read gains")
+                self.anticog_pid_apply = QPushButton("Apply anti-cogging gains")
+                self.anticog_pid_read.clicked.connect(self.read_anticog_pid)
+                self.anticog_pid_apply.clicked.connect(self.apply_anticog_pid)
+                gains_row.addWidget(self.anticog_pid_read)
+                gains_row.addWidget(self.anticog_pid_apply)
+                page_layout.addLayout(gains_row)
+
             progress = QProgressBar()
             progress.setRange(0, 1000)
             self.progress.append(progress)
             page_layout.addWidget(progress)
+            time_label = QLabel("Time estimate available after calibration starts.")
+            time_label.setWordWrap(True)
+            self.time_labels.append(time_label)
+            page_layout.addWidget(time_label)
             status = QLabel("Not connected")
             status.setWordWrap(True)
             self.status.append(status)
@@ -216,9 +325,7 @@ class CalibrationDock(QDockWidget):
             enabled = QCheckBox("Enable encoder correction" if kind == 0 else "Enable anti-cogging compensation")
             self.enabled.append(enabled)
             page_layout.addWidget(enabled)
-            apply = QPushButton("Apply enable setting")
-            apply.clicked.connect(lambda _checked=False, k=kind: self._setting(k))
-            page_layout.addWidget(apply)
+            enabled.clicked.connect(lambda _checked=False, k=kind: self._setting(k))
             controls = QHBoxLayout()
             read = QPushButton("Read table")
             read.clicked.connect(lambda _checked=False, k=kind: self.download(k))
@@ -230,7 +337,7 @@ class CalibrationDock(QDockWidget):
             editor = TableEditor(kind)
             self.editors.append(editor)
             page_layout.addWidget(editor)
-            self.buttons.append([start, stop, apply, read, upload])
+            self.buttons.append([start, stop, read, upload])
             self.tabs.addTab(page, name)
         layout.addWidget(self.tabs)
         self.transfer_status = QLabel("Table transfers require stationary IDLE/ERROR. Applied tables remain disabled until enabled.")
@@ -294,7 +401,7 @@ class CalibrationDock(QDockWidget):
         values.addWidget(self.read_setup)
         layout.addWidget(group)
         note = QLabel("ACK means the request was accepted, not that calibration finished. "
-                      "The driver state is shown above; detailed results and failures appear in the terminal. "
+                      "The driver state is shown above; see Last test / calibration result for the outcome and failure reason. "
                       "Setup changes remain in RAM until saved to flash. Pole pairs and bandwidth can be edited in Variables.")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -310,6 +417,7 @@ class CalibrationDock(QDockWidget):
         variables_by_name = {entry["name"]: entry["id"] for entry in variables}
         configuration_by_name = {entry["name"]: entry["id"] for entry in self.configuration_entries}
         pids_by_name = {entry["name"]: entry["id"] for entry in pids}
+        self.anticog_pid_id = pids_by_name.get("pid_anticogging")
         for name, title, unit in self.RESULT_VARIABLES:
             label = self.variable_labels[name]
             key = name.removeprefix("flash_data.")
@@ -324,6 +432,17 @@ class CalibrationDock(QDockWidget):
             if name in pids_by_name:
                 self.result_pids[pids_by_name[name]] = label
         self._permissions()
+
+    def read_anticog_pid(self):
+        if self.connected and self.anticog_pid_id is not None:
+            self._send(Packet(MsgType.MSG_GET_PID, PIDPayload(self.anticog_pid_id, None, None, None)))
+
+    def apply_anticog_pid(self):
+        if not self.anticog_pid_apply.isEnabled():
+            return
+        self._send(Packet(MsgType.MSG_SET_PID, PIDPayload(self.anticog_pid_id,
+            *(field.value() for field in self.anticog_gain_inputs))),
+            lambda success: self.read_anticog_pid())
 
     def read_setup_values(self):
         """Read existing settings; these values alone do not prove a routine succeeded."""
@@ -345,6 +464,10 @@ class CalibrationDock(QDockWidget):
             label.setText(f"{title}: {payload.value:.6g}{unit}")
 
     def on_setup_pid(self, payload: PIDPayload):
+        if payload.controller_id == self.anticog_pid_id and all(v is not None for v in (payload.kp, payload.ki, payload.kd)):
+            for field, value in zip(self.anticog_gain_inputs, (payload.kp, payload.ki, payload.kd)):
+                field.setValue(value)
+
         label = self.result_pids.get(payload.controller_id)
         if label is not None and payload.kp is not None and payload.ki is not None and payload.kd is not None:
             title = label.text().split(":", 1)[0]
@@ -419,6 +542,11 @@ class CalibrationDock(QDockWidget):
             callback(success)
 
     def set_connected(self, connected: bool):
+        self.enable_pending = [False, False]
+        self.timing = [None, None]
+        for label in self.time_labels:
+            label.setText("Time estimate available after calibration starts." if connected else "Not connected")
+        self.routine_result.setText("Waiting for test/calibration result" if connected else "Disconnected; reconnect to read the retained result.")
         self.generation += 1
         self.connected = connected
         self.transfer = None
@@ -452,6 +580,13 @@ class CalibrationDock(QDockWidget):
             for kind in (0, 1):
                 self._send(Packet(MsgType.MSG_GET_CALIBRATION_INFO, bytes((kind,))))
 
+    def read_routine_result(self):
+        if self.connected and self.transfer is None:
+            self._send(Packet(MsgType.MSG_GET_ROUTINE_RESULT, None))
+
+    def on_routine_result(self, text):
+        self.routine_result.setText(text or "No routine result recorded since boot.")
+
     def set_state(self, state):
         previous = self.state
         self.state = state
@@ -464,10 +599,12 @@ class CalibrationDock(QDockWidget):
             active = state in self.setup_buttons or state in (FOCState.FOC_STATE_ENCODER_CALIBRATION, FOCState.FOC_STATE_ANTICOGGING)
             self.setup_status.setText(f"Driver state: {name}. " +
                                       ("Routine running; percentage is available only for encoder/anti-cogging calibration."
-                                       if active else "Check the terminal for the routine result; STOP/IDLE alone does not confirm success."))
+                                       if active else "See Last test / calibration result; STOP/IDLE alone does not confirm success."))
         self._permissions()
         if (previous != state or requested_state_reply) and state in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR):
             self.read_setup_values()
+            self.read_routine_result()
+            self.read_anticog_pid()
 
     def _permissions(self):
         self.basics._calibration_transfer_busy = self.transfer is not None
@@ -495,6 +632,15 @@ class CalibrationDock(QDockWidget):
             control.setToolTip(action if enabled else reason)
 
         faults_clear = self.active_errors == 0 and self.latched_errors == 0
+        can_edit_gains = safe and not uploading and self.state == FOCState.FOC_STATE_IDLE and faults_clear and self.anticog_pid_id is not None
+        self.anticog_pid_apply.setEnabled(can_edit_gains)
+        self.anticog_pid_read.setEnabled(self.connected and self.anticog_pid_id is not None and self.transfer is None)
+        self.anticog_pid_apply.setToolTip("Apply dedicated calibration gains in IDLE. Save settings to flash to retain them.")
+        for field in self.anticog_gain_inputs:
+            field.setEnabled(can_edit_gains)
+        availability(self.read_result_button, self.connected and self.transfer is None,
+                     "Connect and finish the current transfer first.",
+                     "Read the retained result and a stopped-motor magnetic-field diagnostic snapshot.")
         setup_reason = blocked or (
             "Motor setup requires fault-free IDLE. Clear faults in Basics and stop the motor first."
             if self.state != FOCState.FOC_STATE_IDLE else
@@ -523,19 +669,18 @@ class CalibrationDock(QDockWidget):
                          "Cancel the active routine and request STOP. This is not a hardware emergency stop.")
             can_toggle = valid or (info is not None and bool(info.flags & 2))
             toggle_reason = blocked or (missing_info if info is None else invalid_table)
-            availability(buttons[2], safe and not uploading and can_toggle, toggle_reason,
-                         "Send the selected enable setting to the driver. A valid table is required to enable compensation.")
-            availability(buttons[3], safe and not uploading and info is not None, blocked or missing_info,
+            availability(buttons[2], safe and not uploading and info is not None, blocked or missing_info,
                          "Download the driver's table. Existing local edits require confirmation before replacement.")
-            availability(buttons[4], safe and not uploading and bool(self.editors[kind].values),
+            availability(buttons[3], safe and not uploading and bool(self.editors[kind].values),
                          blocked or "No table has been downloaded. Use 'Read table' first, then edit its values.",
                          "Upload the complete edited table to RAM. Compensation remains disabled until explicitly enabled.")
-            availability(self.enabled[kind], safe and not uploading and can_toggle, toggle_reason,
-                         "Choose whether compensation should be enabled, then click 'Apply enable setting'.")
+            availability(self.enabled[kind], safe and not uploading and can_toggle and not self.enable_pending[kind],
+                         "Waiting for driver acknowledgement." if self.enable_pending[kind] else toggle_reason,
+                         "Immediately enable/disable compensation on the driver. A valid table is required to enable it.")
             availability(self.rounds[kind], safe and not uploading, blocked,
                          "Number of complete revolutions in each direction for the next calibration.")
             availability(self.editors[kind], safe and not uploading, blocked,
-                         "Read a table, then edit numeric cells or drag the selected plotted value.")
+                         "Read a table, then edit numeric cells or drag the selected radial handle.")
         availability(self.abort, self.connected and self.transfer is None,
                      "Not connected. Connect to the driver first." if not self.connected else "A table transfer is in progress. Wait for it to finish or fail before aborting the upload.",
                      "Discard an unfinished driver-side upload. An interrupted anti-cogging table remains invalid.")
@@ -545,13 +690,49 @@ class CalibrationDock(QDockWidget):
     def on_info(self, info: CalibrationInfo):
         previous = self.info.get(info.kind)
         self.info[info.kind] = info
+        self._update_time_estimate(info, previous)
         self.progress[info.kind].setValue(info.progress)
         self.status[info.kind].setText(f"{STAGES[info.kind][info.stage]}; {'valid table' if info.flags & 1 else 'no valid table'}; "
                                      f"{'enabled' if info.flags & 2 else 'disabled'}" +
                                      (f". {ERROR_NAMES[info.error]} (code {info.error})" if info.error else ""))
-        if previous is None or (previous.flags ^ info.flags) & 2:
+        if not self.enable_pending[info.kind]:
             self.enabled[info.kind].setChecked(bool(info.flags & 2))
         self._permissions()
+
+    @staticmethod
+    def _duration(seconds):
+        seconds = max(0, int(seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours:d}h {minutes:02d}m {seconds:02d}s" if hours else f"{minutes:d}m {seconds:02d}s"
+
+    def _update_time_estimate(self, info, previous):
+        now = time.monotonic()
+        running = bool(info.flags & 4)
+        timing = self.timing[info.kind]
+        if running and (timing is None or previous is None or not previous.flags & 4 or info.progress < previous.progress):
+            timing = {"started": now, "initial": info.progress, "last_progress": info.progress, "last_change": now}
+            self.timing[info.kind] = timing
+        if timing is None:
+            return
+        if not running and "finished" not in timing:
+            timing["finished"] = now
+        elapsed = timing.get("finished", now) - timing["started"]
+        if info.progress > timing["last_progress"]:
+            timing["last_progress"] = info.progress
+            timing["last_change"] = now
+        if not running:
+            outcome = "Completed" if info.stage == 6 else "Stopped/failed"
+            self.time_labels[info.kind].setText(f"{outcome}; observed elapsed {self._duration(elapsed)}.")
+            return
+        delta = info.progress - timing["initial"]
+        if now - timing["last_change"] >= 10:
+            remaining = "Remaining uncertain — progress stalled"
+        elif delta < 10 or elapsed < 2:
+            remaining = "Estimating remaining time…"
+        else:
+            remaining = "Estimated remaining ~" + self._duration(elapsed * (1000 - info.progress) / delta)
+        self.time_labels[info.kind].setText(f"Observed elapsed {self._duration(elapsed)}; {remaining}.")
 
     def start(self, kind):
         if not self.buttons[kind][0].isEnabled():
@@ -572,11 +753,26 @@ class CalibrationDock(QDockWidget):
             self.refresh()
 
     def _setting(self, kind):
-        self._send(Packet(MsgType.MSG_ENABLE_CALIBRATION, bytes((kind, int(self.enabled[kind].isChecked())))), self._after_setting)
+        if self.enable_pending[kind] or not self.enabled[kind].isEnabled():
+            return
+        enabled = self.enabled[kind].isChecked()
+        self.enable_pending[kind] = True
+        self._permissions()
+
+        def completed(success):
+            self.enable_pending[kind] = False
+            if not success:
+                info = self.info.get(kind)
+                self.enabled[kind].setChecked(bool(info and info.flags & 2))
+            self._permissions()
+            # Read back authoritative status on success or rejection.
+            self._after_setting(True)
+
+        self._send(Packet(MsgType.MSG_ENABLE_CALIBRATION, bytes((kind, int(enabled)))), completed)
 
     def download(self, kind):
         info = self.info.get(kind)
-        if info is None or not self.buttons[kind][3].isEnabled():
+        if info is None or not self.buttons[kind][2].isEnabled():
             return
         if self.editors[kind].dirty and QMessageBox.question(self, "Discard local edits?", "Replace local edits with the driver table?") != QMessageBox.StandardButton.Yes:
             return
@@ -612,7 +808,7 @@ class CalibrationDock(QDockWidget):
             self._read_next()
 
     def upload(self, kind):
-        if not self.buttons[kind][4].isEnabled():
+        if not self.buttons[kind][3].isEnabled():
             return
         info = self.info.get(kind)
         values = tuple(self.editors[kind].values)

@@ -149,6 +149,16 @@ class CalibrationUITests(unittest.TestCase):
                 return
         self.fail("GUI transfer did not finish")
 
+    def test_routine_result_readback_and_fault_reason_stay_visible(self):
+        from protocol_codec import TextPayload
+        self.dock.read_routine_result()
+        self.pump()
+        self.assertIn("unavailable in simulation", self.dock.routine_result.text())
+        reason = "Routine result: Encoder calibration failed. Rotor tracking error exceeds limit; stage=3."
+        self.window.on_reply(Packet(MsgType.MSG_ROUTINE_RESULT_REPLY, TextPayload(reason)))
+        self.dock.set_state(FOCState.FOC_STATE_ERROR)
+        self.assertEqual(self.dock.routine_result.text(), reason)
+
     def test_new_tab_contains_encoder_controls_and_local_editors(self):
         self.assertIn(self.dock, self.window.tabifiedDockWidgets(self.window.basics_dock))
         self.assertTrue(self.dock.isAncestorOf(self.window.basics_dock.encoder_source_combo))
@@ -156,17 +166,96 @@ class CalibrationUITests(unittest.TestCase):
         self.pump()
         editor = self.dock.editors[0]
         self.assertEqual(editor.table.rowCount(), 128)
-        self.assertEqual(len(editor.curves[0].getData()[0]), 128)
+        self.assertEqual(len(editor.curves[0].getData()[0]), 129)
         editor.table.item(0, 2).setText("0.001")
         self.assertTrue(editor.dirty)
         self.assertEqual(editor.values[0], 0.001)
         editor.table.item(0, 2).setText("nan")
         self.assertEqual(editor.values[0], 0.001)
         editor.select_point(1, 0)
-        editor.value_line.setValue(0.002)
-        editor._line_edited()
+        editor.radial_handle.setPos(*editor._radial_point(1, 0.002))
+        editor._radial_edited()
         self.assertEqual(editor.values[1], 0.002)
         self.assertEqual(self.h.simulator._cal_tables[0][1], 0)
+
+    def test_progress_time_estimate_is_local_stall_aware_and_frozen_at_completion(self):
+        def info(progress, flags=5, stage=3):
+            return CalibrationInfo(1, flags, stage, 0, progress, 1, 1000, 2)
+        sent = []
+        self.dock.send = lambda packet, **kwargs: sent.append(packet)
+        self.dock.timing = [None, None]
+        with patch("ui.calibration_panel.time.monotonic", return_value=100):
+            self.dock.on_info(info(0))
+        self.assertIn("Estimating", self.dock.time_labels[1].text())
+        with patch("ui.calibration_panel.time.monotonic", return_value=110):
+            self.dock.on_info(info(100))
+        self.assertIn("~1m 30s", self.dock.time_labels[1].text())
+        with patch("ui.calibration_panel.time.monotonic", return_value=122):
+            self.dock.on_info(info(100))
+        self.assertIn("stalled", self.dock.time_labels[1].text())
+        with patch("ui.calibration_panel.time.monotonic", return_value=200):
+            self.dock.on_info(info(1000, 1, 6))
+        finished = self.dock.time_labels[1].text()
+        with patch("ui.calibration_panel.time.monotonic", return_value=300):
+            self.dock.on_info(info(1000, 1, 6))
+        self.assertEqual(self.dock.time_labels[1].text(), finished)
+        with patch("ui.calibration_panel.time.monotonic", return_value=400):
+            self.dock.on_info(info(0))
+        self.assertIn("0m 00s", self.dock.time_labels[1].text())
+        self.assertEqual(sent, [])  # No driver commands for ETA calculation.
+
+    def test_dedicated_anticog_pid_controls_use_discovered_id_and_readback(self):
+        self.dock.set_definitions([], [{"id": 92, "name": "pid_anticogging"}])
+        self.dock.set_errors(active=0, latched=0)
+        self.dock.set_state(FOCState.FOC_STATE_IDLE)
+        self.assertEqual([field.value() for field in self.dock.anticog_gain_inputs], [10, 20, 0.2])
+        sent = []
+        self.dock.send = lambda packet, **kwargs: sent.append(packet)
+        self.dock.anticog_gain_inputs[0].setValue(3)
+        self.dock.apply_anticog_pid()
+        self.assertEqual(sent[-1].msg_type, MsgType.MSG_SET_PID)
+        self.assertEqual(sent[-1].data.controller_id, 92)
+        self.assertEqual(sent[-1].data.kp, 3)
+        self.dock.on_setup_pid(PIDPayload(92, 4, 5, 0.1))
+        self.assertEqual([field.value() for field in self.dock.anticog_gain_inputs], [4, 5, 0.1])
+        self.dock.set_state(FOCState.FOC_STATE_ANTICOGGING)
+        self.assertFalse(self.dock.anticog_pid_apply.isEnabled())
+
+    def test_angles_are_displayed_in_radians(self):
+        encoder = self.dock.editors[0]
+        encoder.set_values([0, 0.01, 0, -0.01])
+        self.assertEqual(encoder.table.horizontalHeaderItem(1).text(), "Angle (rad)")
+        self.assertAlmostEqual(float(encoder.table.item(1, 1).text()), math.pi / 2, places=5)
+        self.assertIn("rad", encoder.summary.text())
+        self.assertNotIn("°", encoder.summary.text())
+        self.assertIn("0.02 rad", encoder.summary.text())
+
+    def test_radial_geometry_shared_scale_and_encoder_sign(self):
+        encoder, anti = self.dock.editors
+        encoder.set_values([0, -0.01, 0, 0.01])
+        x, y = encoder.curves[0].getData()
+        self.assertAlmostEqual(x[0], 1)
+        self.assertAlmostEqual(y[1], 1.25)
+        self.assertAlmostEqual(y[3], -0.75)
+        self.assertAlmostEqual(x[-1], x[0])
+        self.assertAlmostEqual(y[-1], y[0])
+        self.assertAlmostEqual(encoder.radial_span, 0.02)
+        anti.set_values([0.5, -0.5, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(anti.radial_span, 1)
+        self.assertAlmostEqual(anti.curves[0].getData()[0][0], 1.25)
+        self.assertAlmostEqual(anti.curves[1].getData()[0][0], 0.75)
+        anti.table.item(0, 3).setText("-3")
+        self.assertEqual(anti.radial_span, 4)
+        self.assertAlmostEqual(anti.curves[0].getData()[0][0], 1.0625)
+        self.assertAlmostEqual(anti.curves[1].getData()[0][0], 0.625)
+        self.assertIn("auto-expanded", anti.summary.text())
+        anti.table.item(0, 3).setText("-0.5")
+        self.assertEqual(anti.radial_span, 1)
+        anti.select_point(1, 1)
+        anti.radial_handle.setPos(0.3, 1.25)
+        anti._radial_edited()
+        self.assertAlmostEqual(anti.values[3], 0.5)
+        self.assertAlmostEqual(anti.radial_handle.pos().x(), 0)
 
     def test_anticog_download_edit_upload_requires_explicit_enable(self):
         from PySide6.QtWidgets import QMessageBox
@@ -183,13 +272,12 @@ class CalibrationUITests(unittest.TestCase):
         self.assertFalse(editor.dirty)
         self.assertIsNone(self.dock.transfer)
         self.assertNotIn("error 0", self.dock.status[1].text().lower())
-        self.dock.enabled[1].setChecked(True)
-        self.dock._setting(1)
+        self.dock.enabled[1].click()
         self.pump()
         self.assertEqual(self.h.simulator._anti_flags, 3)
         self.window.set_worker(None)
         self.assertFalse(editor.values)
-        self.assertFalse(self.dock.buttons[1][4].isEnabled())
+        self.assertFalse(self.dock.buttons[1][3].isEnabled())
 
     def test_transfer_failure_stops_upload_chain(self):
         from PySide6.QtWidgets import QMessageBox
@@ -305,7 +393,7 @@ class CalibrationUITests(unittest.TestCase):
         self.dock.await_setup_state = True
         self.dock.set_state(FOCState.FOC_STATE_IDLE)
         self.assertFalse(self.dock.setup_pending)
-        self.assertEqual(len(sent), 6)
+        self.assertEqual(len(sent), 7)
         self.dock.set_definitions([], [])
         self.assertFalse(self.dock.read_setup.isEnabled())
         self.assertTrue(all("Not exposed" in label.text() for label in self.dock.variable_labels.values()))
@@ -325,25 +413,43 @@ class CalibrationUITests(unittest.TestCase):
         packets = [self.h.codec.extract_packets(bytearray(frame))[0] for frame in self.h.sent]
         self.assertFalse(any(packet.msg_type_int == MsgType.MSG_GET_VAR for packet in packets))
 
+    def test_checkboxes_send_immediately_and_revert_rejections_without_status_echo(self):
+        sent = []
+        self.dock.send = lambda packet, completed=None: sent.append((packet, completed))
+        self.dock.set_state(FOCState.FOC_STATE_IDLE)
+        for kind in (0, 1):
+            self.dock.on_info(CalibrationInfo(kind, 1, 6, 0, 1000, 1, 128 if kind == 0 else 1000, kind + 1))
+            sent.clear()
+            self.assertFalse(self.dock.enabled[kind].isChecked())
+            self.dock.enabled[kind].click()
+            enables = [(p, cb) for p, cb in sent if p.msg_type == MsgType.MSG_ENABLE_CALIBRATION]
+            self.assertEqual(len(enables), 1)
+            self.assertEqual(enables[0][0].data, bytes((kind, 1)))
+            self.assertFalse(self.dock.enabled[kind].isEnabled())
+            enables[0][1](False)
+            self.assertFalse(self.dock.enabled[kind].isChecked())
+            sent.clear()
+            self.dock.on_info(CalibrationInfo(kind, 3, 6, 0, 1000, 1, 128 if kind == 0 else 1000, kind + 1))
+            self.assertTrue(self.dock.enabled[kind].isChecked())
+            self.assertFalse(any(p.msg_type == MsgType.MSG_ENABLE_CALIBRATION for p, _ in sent))
+
     def test_disabled_calibration_controls_explain_the_blocker(self):
         toggle = self.dock.enabled[1]
-        apply = self.dock.buttons[1][2]
         self.assertFalse(toggle.isEnabled())
         self.assertIn("no valid anti-cogging table", toggle.toolTip())
-        self.assertEqual(toggle.toolTip(), apply.toolTip())
         self.dock.set_state(FOCState.FOC_STATE_RUN)
-        self.assertIn("RUN", apply.toolTip())
+        self.assertIn("RUN", toggle.toolTip())
         self.dock.set_state(FOCState.FOC_STATE_IDLE)
         self.dock.on_info(CalibrationInfo(1, 9, 0, 0, 0, 3, 1000, 2))
         self.assertIn("unfinished table upload", toggle.toolTip())
         self.dock.on_info(CalibrationInfo(1, 1, 6, 0, 1000, 3, 1000, 2))
-        self.assertTrue(apply.isEnabled())
-        self.assertIn("Send the selected enable setting", apply.toolTip())
+        self.assertTrue(toggle.isEnabled())
+        self.assertIn("Immediately enable/disable compensation", toggle.toolTip())
         self.dock.transfer = {"mode": "read"}
         self.dock._permissions()
-        self.assertIn("transfer is in progress", apply.toolTip())
+        self.assertIn("transfer is in progress", toggle.toolTip())
         self.dock.set_connected(False)
-        self.assertIn("Not connected", apply.toolTip())
+        self.assertIn("Not connected", toggle.toolTip())
 
     def test_disabled_checkbox_hover_displays_reason(self):
         from PySide6.QtCore import QEvent, QPoint

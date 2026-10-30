@@ -22,7 +22,6 @@ from config import (
 )
 from USB_debugger.protocol_codec import ProtocolCodec, RawPacket, CommandErrorPayload, EncoderInfoPayload, EncoderSourceInfo
 from USB_debugger.calibration_protocol import CalibrationInfo, CalibrationTable, CHUNK
-from USB_debugger.hfi_protocol import LAYOUT as HFI_LAYOUT
 from USB_debugger.device_definitions import Definitions, DeviceInfo, PAGE_HEADER
 from USB_debugger.protocol_definitions import (
     PROTOCOL_VERSION,
@@ -102,7 +101,6 @@ class SimulatorWorker:
         self._stop_event = threading.Event()
         self._logging = False
         self._state = int(FOCState.FOC_STATE_IDLE)
-        self._feedback_source = 0
         self._control_mode: ControlMode | None = None
         self._timestamp = 0
         self._started_at = time.monotonic()
@@ -120,7 +118,7 @@ class SimulatorWorker:
         self._encoder_stage = self._encoder_progress = self._encoder_error = 0
         self._encoder_started = 0.0
         self._saved_encoder = (self._encoder_source, self._encoder_flags)
-        self._cal_rounds = [3, 3]
+        self._cal_rounds = [1, 1]
         self._cal_tables = [[0.0] * 128, [0.0] * 2000]
         self._saved_cal_tables = [list(table) for table in self._cal_tables]
         self._anti_flags = self._anti_stage = self._anti_progress = self._anti_error = 0
@@ -232,8 +230,6 @@ class SimulatorWorker:
         self._check_errors()
         self._update_encoder_calibration()
         payload = raw_packet.payload_bytes
-        if self._hfi_command(msg_type, payload):
-            return
         if self._configuration_command(msg_type, payload):
             return
         if self._calibration_command(msg_type, payload):
@@ -355,6 +351,12 @@ class SimulatorWorker:
                 if "flash_data." + entry["name"] == meta["name"]:
                     self._configuration[entry["id"]] = self._variables[var_id]
             self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_ROUTINE_RESULT:
+            if payload:
+                self._invalid_payload(msg_type)
+                return
+            self._reply(MsgType.MSG_ROUTINE_RESULT_REPLY,
+                        b"Simulator: no hardware routine result. Magnetic-field diagnostics unavailable in simulation.")
         elif msg_type == MsgType.MSG_TEXT_COMMAND:
             if not self.info.debug_writes:
                 self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Legacy debug text commands are disabled.")
@@ -413,8 +415,6 @@ class SimulatorWorker:
                     self._anti_stage = 8
                 previous_state = self._state
                 self._state = int(state)
-                if state != FOCState.FOC_STATE_RUN:
-                    self._feedback_source = 0
                 if (
                     previous_state == int(FOCState.FOC_STATE_RUN)
                     and self._state != int(FOCState.FOC_STATE_RUN)
@@ -451,6 +451,7 @@ class SimulatorWorker:
                     return
                 if self._encoder_source != payload[0]:
                     self._encoder_source, self._encoder_flags = payload[0], 8
+                    self._anti_flags = 0
             elif payload[0] > 1 or (payload[0] and not self._encoder_flags & 1):
                 self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "A valid correction table is required.")
                 return
@@ -607,8 +608,6 @@ class SimulatorWorker:
             self._state = int(FOCState.FOC_STATE_ERROR)
         elif self._state == int(FOCState.FOC_STATE_ERROR):
             self._state = int(FOCState.FOC_STATE_STOP)
-        if self._state != FOCState.FOC_STATE_RUN:
-            self._feedback_source = 0
         if self._state != previous:
             if previous == FOCState.FOC_STATE_ENCODER_CALIBRATION:
                 self._encoder_stage, self._encoder_error = 7, 7
@@ -633,7 +632,7 @@ class SimulatorWorker:
         self._encoder_progress = min(1000, max(0, int((time.monotonic() - self._encoder_started) * 1000 / self._cal_rounds[0])))
         self._encoder_stage = 3
         if self._encoder_progress == 1000:
-            self._encoder_flags = 15
+            self._encoder_flags = 13
             self._cal_tables[0] = [0.01 * math.sin(i * 2 * math.pi / 128) for i in range(128)]
             self._anti_flags &= ~1
             self._saved_cal_tables = [list(table) for table in self._cal_tables]
@@ -821,45 +820,6 @@ class SimulatorWorker:
     def _var_meta(self, var_id: int) -> dict | None:
         return next((item for item in self.definitions.variables if int(item["id"]) == var_id), None)
 
-    def _hfi_status(self):
-        """Synthetic UI fixture only: this does not simulate a saliency estimator."""
-        enabled = bool(self._value("flash_data.hfi.hfi_enabled"))
-        active = enabled and self._state == FOCState.FOC_STATE_RUN and not (self._active_errors or self._latched_errors)
-        if not active:
-            self._feedback_source = 0
-        flags = int(enabled) | (30 if active else 0) | (32 if self._feedback_source else 0)
-        return flags
-
-    def _hfi_command(self, command, payload):
-        if command not in (MsgType.MSG_GET_HFI_INFO, MsgType.MSG_SET_FEEDBACK_SOURCE):
-            return False
-        if self.info.protocol < 9:
-            self._error(MsgType.MSG_ERROR, command, CommandErrorCode.UNKNOWN_COMMAND, "HFI requires protocol 9.")
-            return True
-        flags = self._hfi_status()
-        if command == MsgType.MSG_GET_HFI_INFO:
-            if payload:
-                self._invalid_payload(command)
-            else:
-                self._reply(MsgType.MSG_HFI_INFO_REPLY, HFI_LAYOUT.pack(self._feedback_source, flags, 0.0,
-                            0.04 if flags & 2 else 0.0, 0.0, 0.0))
-            return True
-        if len(payload) != 1:
-            self._invalid_payload(command)
-            return True
-        if (payload[0] not in (0, 1) or self._state != FOCState.FOC_STATE_RUN or
-                self._control_mode != ControlMode.CONTROL_MODE_OPENLOOP or self._cal_upload is not None or
-                self._active_errors or self._latched_errors or
-                any(abs(self._targets[name]) > 0.001 for name in ("dq_current_setpoint.d", "dq_current_setpoint.q")) or
-                payload[0] and not flags & 16):
-            self._error(MsgType.MSG_ERROR, command, CommandErrorCode.INVALID_STATE,
-                        "Feedback switching requires fault-free zero-current open-loop RUN; HFI requires valid lock.")
-            return True
-        self._feedback_source = payload[0]
-        self._anti_flags &= ~2
-        self._ack(command)
-        return True
-
     def _configuration_command(self, command, payload):
         """Model validated production operations independently from debug writes."""
         commands = (MsgType.MSG_GET_CONFIGURATION, MsgType.MSG_SET_CONFIGURATION, MsgType.MSG_SET_TARGET, MsgType.MSG_GET_TARGETS)
@@ -911,9 +871,9 @@ class SimulatorWorker:
                     raise ValueError("Undervoltage trip must be below overvoltage trip.")
                 if fields[0]["group"] == "Limits" and names["limits.max_dq_voltage"] > names["limits.vbus_undervoltage_trip_level"] / math.sqrt(3):
                     raise ValueError("Voltage limit must fit undervoltage trip / sqrt(3).")
-                if fields[0]["group"] in ("Limits", "HFI", "Encoder"):
+                if fields[0]["group"] in ("Limits", "Encoder"):
                     voltage = names.get("limits.max_dq_voltage", math.inf)
-                    if names.get("hfi.injection_amplitude", 0) > voltage or names.get("encoder.calibration_voltage", 0) > voltage:
+                    if names.get("encoder.calibration_voltage", 0) > voltage:
                         raise ValueError("Injection/calibration voltage exceeds the voltage limit.")
                 if names.get("controller.current_PID_FF_enabled", 0) and fields[0]["group"] == "Controller":
                     if names.get("motor.phase_resistance", 0) <= 0 or names.get("motor.phase_inductance", 0) <= 0:
@@ -925,7 +885,6 @@ class SimulatorWorker:
                     if identifier is not None:
                         self._variables[identifier] = candidate[entry["id"]]
                 if different:
-                    self._feedback_source = 0
                     self._anti_flags = 0
                     if any(by_id[i]["name"] in ("motor.direction", "motor.pole_pairs") for i in changed):
                         self._encoder_flags &= ~7
@@ -1047,24 +1006,5 @@ class SimulatorWorker:
             "angle_setpoint": float(self._value("angle_setpoint")),
             "speed_setpoint": float(self._value("speed_setpoint")),
             "execution_time.loop_max": 120 + int(8 * abs(math.sin(phase))),
-            "hfi.injection_phase": angle % (2.0 * math.pi),
-            "hfi.i_alpha_l_raw": 0.2 * math.sin(phase * 2.0),
-            "hfi.i_beta_l_raw": 0.2 * math.cos(phase * 2.0),
-            "hfi.i_alpha_l_filtered": 0.15 * math.sin(phase * 2.0),
-            "hfi.i_beta_l_filtered": 0.15 * math.cos(phase * 2.0),
         }
-        flags = self._hfi_status()
-        electrical = float(values["encoder_angle_electrical"])
-        error = 0.01 * math.sin(elapsed * 2) if flags & 16 else 0.0
-        poles = max(1, int(self._value("flash_data.motor.pole_pairs")))
-        values.update({
-            "hfi.angle_axis_mod_pi": (electrical + error) % math.pi if flags & 16 else 0.0,
-            "hfi.angle_electrical": (electrical + error) % (2 * math.pi) if flags & 16 else 0.0,
-            "hfi.angle_mechanical_unwrapped": angle + error / poles if flags & 16 else 0.0,
-            "hfi.speed_mechanical": float(values["encoder_speed_mechanical"]) if flags & 16 else 0.0,
-            "hfi.error_electrical": error, "hfi.error_mechanical": error / poles,
-            "hfi.signal_amplitude": 0.04 if flags & 2 else 0.0,
-            "hfi.saliency_ratio": 0.2 if flags & 2 else 0.0,
-            "hfi.status": flags,
-        })
         return values

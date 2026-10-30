@@ -28,8 +28,11 @@ calibration progress. Source changes require stationary IDLE/ERROR and invalidat
 alignment and anti-cogging. Encoder calibration requires aligned,
 fault-free IDLE and confirmation that the unloaded shaft can rotate. STOP cancels
 measurement; success saves settings and requires anti-cogging recalibration.
-Only implemented physical encoder sources are listed. Experimental HFI feedback
-uses a separate selector and still requires an aligned, healthy encoder.
+Angle sources are discovered from the driver. Current firmware offers internal and
+external AS5047P, each via quadrature or SPI DMA. Source IDs are saved in flash;
+select a source in Calibration, align it, then save settings to persist the choice.
+External quadrature uses the shared ENC_A/ENC_B inputs (PB4/PB5); only one sensor
+may drive these pins.
 The firmware's flash format 2 rejects older settings records rather than
 interpreting their old layout. Back up settings before a firmware upgrade.
 
@@ -69,7 +72,7 @@ clear; a present fault immediately relatches. Recovery does not resume RUN.
 ## Production configuration and debugging
 
 The Configuration tab generates grouped forms from the connected driver's
-metadata. Current groups are Limits, Motor, Controller, HFI injection, and Encoder
+metadata. Current groups are Limits, Motor, Controller, and Encoder
 calibration voltage. Read a group, edit one or more fields, then apply its edits
 to RAM. The firmware validates the complete candidate group and applies all edits
 or none; rejection retains the local edits and reports the error in the terminal.
@@ -157,14 +160,39 @@ STOP without entering RUN; it is not a hardware emergency stop. Setup changes
 remain in RAM until saved to flash.
 
 Encoder and anti-cogging routines support 1-8 revolutions per direction
-(default three), percentage/stage reporting and compensation enable/disable.
+(default one), percentage/stage reporting and compensation enable/disable.
 Calibration rotates the unloaded motor; STOP cancels it.
 
-Read table downloads the accepted driver table. Plots show encoder correction
-in radians versus raw sensor angle, or forward/reverse anti-cogging compensation
-in amperes versus mechanical angle. Numeric cells are editable; selecting a cell
-or plotted point and dragging the yellow horizontal line edits that value. RMS
-and peak summarize table magnitudes, not independently measured residual errors.
+Both routines leave newly calibrated compensation disabled. Click the enable
+checkbox to send the setting immediately; no separate Apply button is needed.
+Driver status updates do not send enable commands, and rejected changes revert
+the checkbox. Encoder calibration also saves its table with correction disabled.
+
+Read table downloads the accepted driver table. Radial plots show deviation
+from a solid reference circle: positive outside, negative inside, with 0 radians
+at the right and angles increasing counterclockwise. Encoder deviation is inferred
+measurement error (negative correction), exaggerated radially around an ideal
+circle; it is not the magnet's physical shape or a raw sweep recording. Encoder
+bins use raw sensor angle. Anti-cogging shows forward/reverse current in amperes
+at aligned mechanical angle, sharing one scale around a zero-current circle.
+Default ranges are fixed at +/-0.02 rad and +/-1 A, respectively, so small
+errors look smaller across motors. Ranges expand by factors of two only when
+needed and return to the default when values fit; the current range is always
+displayed. Compare ranges as well as RMS/peak values between motors.
+Numeric cells are editable; select a cell or plotted point and drag the yellow
+handle radially to edit its value. Encoder cells still contain correction radians,
+so outward dragging decreases correction. RMS and peak summarize table
+magnitudes, not independently measured residual errors.
+
+The Calibration tab's **Last test / calibration result** area shows the retained
+firmware reason, stage and fault flags for encoder calibration, alignment,
+direction testing, R/L identification, PI tuning, current-sensor calibration and
+anti-cogging. It refreshes on IDLE/ERROR; **Read result and encoder diagnostics**
+retries manually. Results survive a USB reconnect, but not a device reboot.
+With updated firmware, stopped-motor readback also checks AS5047P magnetic-field
+flags: MAGL = weak field, MAGH = strong field, COF = unreliable angle. This is a
+snapshot when read, not proof of the field at the earlier failure instant.
+The simulator reports hardware diagnostics as unavailable.
 
 Apply edited table to RAM uploads acknowledged chunks with CRC validation.
 Successful uploads leave compensation disabled; activation is explicit. Encoder
@@ -209,13 +237,10 @@ disabled during maintenance; flash actions from ERROR return to ERROR while
 faults remain, rather than resuming RUN. The simulator supports the same
 ERROR-state permissions and preserves its active/latched fault masks.
 
-The plotter explicitly supports protocol 6 (three catalogs, no CAN discovery),
-protocol 7 (four catalogs), protocol 8 (five catalogs and validated settings/
-targets), and protocol 9 (experimental HFI feedback). Protocol 7 adds a CAN cyclic count to device info and definition kind 3;
-protocol 8 adds configuration count/metadata and the debug-write capability.
-Protocol 9 retains that discovery layout and adds feedback-source selection and
-HFI status. Older supported drivers do not receive these new commands.
-Unknown protocols are rejected. Wire layout, discovery
+The plotter supports protocols 6 through 11. Protocol 6 has three catalogs,
+protocol 7 adds CAN cyclic discovery, and protocols 8–11 include validated
+configuration and targets. Protocol 11 uses the physical encoder source selector;
+retired command IDs 0x3C–0x3F are not issued. Unknown protocols are rejected. Wire layout, discovery
 grammar, or primitive encoding changes require explicit protocol support;
 firmware release/version numbers alone do not determine compatibility.
 Adding, removing, or reordering list entries changes the fingerprint and does
@@ -231,32 +256,15 @@ not in production Python constants. Period tooltips use the reported driver tick
 rate; zero disables a cyclic message. A legacy driver or a driver advertising an
 empty CAN list shows an explanatory message while node-ID controls remain usable.
 
-## Experimental HFI comparison
+Calibration progress bars include a plotter-only observed elapsed time and
+remaining-time estimate. It extrapolates existing progress against the local
+monotonic clock, waits for enough progress, and marks the estimate uncertain
+when progress stalls. It needs no additional driver command. Reconnecting
+starts a new observation interval; it cannot recover elapsed time before the
+connection. Completed/failed elapsed time is frozen until a new run starts.
 
-The HFI tab shows confirmed feedback, injection state, lock/validity, saliency
-current, electrical error and speed on protocol 9 drivers. Encoder remains the
-default. Injection is configured in Configuration → HFI while stationary IDLE;
-it only runs in RUN. Frequency settings use rad/s (1000 Hz = 6283.185 rad/s).
-The unloaded shaft must be clear and current/voltage limits reviewed before
-entering zero-current open-loop RUN: injection energizes the motor.
-
-The Signals list discovers `hfi.angle_electrical`,
-`hfi.angle_mechanical_unwrapped`, `hfi.speed_mechanical`, `hfi.error_electrical`,
-`hfi.error_mechanical`, `hfi.signal_amplitude`, `hfi.saliency_ratio`,
-`hfi.angle_axis_mod_pi` and `hfi.status`. Electrical/mechanical angles and errors
-are radians. Plot encoder and HFI angles together with error, quality and status
-before selecting HFI. Zero/unseeded or invalid estimates are not usable feedback.
-Status bits are enabled=1, active=2, seeded=4, locked=8, valid=16, selected=32.
-
-The source selector requires RUN and valid HFI lock; firmware additionally
-requires stationary zero-current open-loop operation and no faults/uploads.
-Selecting HFI changes commutation, speed and position feedback and requires an
-explicit confirmation. STOP/ERROR restores encoder feedback. A lost HFI lock
-while selected latches an HFI fault and disables motor output.
-
-HFI uses the encoder once for polarity/absolute mechanical origin and keeps it
-as an independent safety reference. This is low-speed experimental feedback,
-not encoder-free absolute positioning or sensorless startup. Actual accuracy,
-stability and sample-loop timing require motor-hardware testing. Simulator HFI
-values are synthetic UI fixtures, not a physical estimator or accuracy test.
-The firmware's `docs/hfi.md` describes the estimator, guards and wire payloads.
+Anti-cogging uses dedicated configurable PID gains, continuous targets and
+100 ms current-averaging windows with movement/noise/saturation checks. Configure Kp/Ki/Kd in Calibration > Anti-cogging (defaults 10/20/0.2), click
+Apply anti-cogging gains in IDLE, and save settings to flash to retain them.
+Normal position gains are independent. All angle graphs, radial labels and table bins use radians.
+Forward/reverse disagreement is shown after downloading the table.

@@ -3,8 +3,8 @@ from enum import IntEnum, IntFlag
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
-PROTOCOL_VERSION = 9
-SUPPORTED_PROTOCOL_VERSIONS = (6, 7, 8, 9)
+PROTOCOL_VERSION = 11
+SUPPORTED_PROTOCOL_VERSIONS = (6, 7, 8, 9, 10, 11)
 
 
 class CommandErrorCode(IntEnum):
@@ -93,7 +93,7 @@ class FOCError(IntFlag):
     FOC_ERROR_IBUS_OC = 1 << 13
     FOC_ERROR_ENCODER_FAULT = 1 << 14
     FOC_ERROR_OPERATION_FAILED = 1 << 15
-    FOC_ERROR_HFI_FAULT = 1 << 16
+    FOC_ERROR_PHASE_OC = 1 << 16
 
 
 # Keep user-facing descriptions alongside the bit definitions so the UI and
@@ -115,7 +115,7 @@ FOC_ERROR_LABELS = {
     FOCError.FOC_ERROR_IBUS_OC: "IBUS over-current",
     FOCError.FOC_ERROR_ENCODER_FAULT: "Encoder fault",
     FOCError.FOC_ERROR_OPERATION_FAILED: "Operation failed",
-    FOCError.FOC_ERROR_HFI_FAULT: "HFI feedback/injection fault",
+    FOCError.FOC_ERROR_PHASE_OC: "Phase over-current",
 }
 
 
@@ -180,9 +180,8 @@ class MsgType(IntEnum):
     MSG_SET_TARGET = 0x39
     MSG_GET_TARGETS = 0x3A
     MSG_TARGETS_REPLY = 0x3B
-    MSG_SET_FEEDBACK_SOURCE = 0x3C
-    MSG_GET_HFI_INFO = 0x3D
-    MSG_HFI_INFO_REPLY = 0x3E
+    MSG_GET_ROUTINE_RESULT = 0x3C
+    MSG_ROUTINE_RESULT_REPLY = 0x3D
 
     MSG_UNKNOWN_TYPE = 0xFA
     MSG_INVALID_PAYLOAD = 0xFB

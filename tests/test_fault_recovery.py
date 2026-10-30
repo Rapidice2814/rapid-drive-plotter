@@ -157,9 +157,11 @@ class FirmwareFaultContractTests(unittest.TestCase):
         self.assertEqual(FOCError.FOC_ERROR_OPERATION_FAILED, 0x8000)
 
     def test_operation_failures_latch_instead_of_entering_unexplained_error(self):
-        for filename, count in (("FOC_States_Calibration.c", 7), ("FOC_States_Storage.c", 3)):
+        for filename, count in (("FOC_States_Calibration.c", 7), ("FOC_States_Storage.c", 4)):
             source = (self.firmware / "Foc/FOC_States" / filename).read_text()
-            self.assertEqual(source.count("FOC_SetError(hfoc, FOC_ERROR_OPERATION_FAILED)"), count)
+            # Some routines preserve a specific fault (e.g. phase over-current)
+            # instead of replacing its cause with OPERATION_FAILED.
+            self.assertEqual(source.count("FOC_SetError(hfoc,"), count)
             self.assertNotIn("FOC_SetState(hfoc, FOC_STATE_ERROR", source)
 
     def test_flash_critical_sections_have_one_cleanup_exit(self):

@@ -2,164 +2,181 @@
   "encoder_sources": [
     {
       "id": 0,
-      "name": "AS5047P timer",
+      "name": "Internal AS5047P quadrature",
+      "calibratable": true
+    },
+    {
+      "id": 1,
+      "name": "Internal AS5047P SPI DMA",
+      "calibratable": true
+    },
+    {
+      "id": 2,
+      "name": "External AS5047P SPI DMA",
+      "calibratable": true
+    },
+    {
+      "id": 3,
+      "name": "External AS5047P quadrature",
       "calibratable": true
     }
   ],
   "signals": [
     {
       "type": "u32",
-      "name": "tick"
+      "name": "tick",
+      "id": 0
     },
     {
       "type": "f",
-      "name": "adc_values.motor_temp"
+      "name": "adc_values.motor_temp",
+      "id": 1
     },
     {
       "type": "f",
-      "name": "adc_values.mosfet_temp"
+      "name": "adc_values.mosfet_temp",
+      "id": 2
     },
     {
       "type": "f",
-      "name": "adc_values.vbus"
+      "name": "adc_values.vbus",
+      "id": 3
     },
     {
       "type": "f",
-      "name": "ibus"
+      "name": "ibus",
+      "id": 4
     },
     {
       "type": "f",
-      "name": "adc_values.phase_current.a"
+      "name": "adc_values.phase_current.a",
+      "id": 5
     },
     {
       "type": "f",
-      "name": "adc_values.phase_current.b"
+      "name": "adc_values.phase_current.b",
+      "id": 6
     },
     {
       "type": "f",
-      "name": "adc_values.phase_current.c"
+      "name": "adc_values.phase_current.c",
+      "id": 7
     },
     {
       "type": "f",
-      "name": "ab_current.alpha"
+      "name": "ab_current.alpha",
+      "id": 8
     },
     {
       "type": "f",
-      "name": "ab_current.beta"
+      "name": "ab_current.beta",
+      "id": 9
     },
     {
       "type": "f",
-      "name": "dq_current.d"
+      "name": "dq_current.d",
+      "id": 10
     },
     {
       "type": "f",
-      "name": "dq_current.q"
+      "name": "dq_current.q",
+      "id": 11
     },
     {
       "type": "f",
-      "name": "dq_current_filtered.d"
+      "name": "dq_current_filtered.d",
+      "id": 12
     },
     {
       "type": "f",
-      "name": "dq_current_filtered.q"
+      "name": "dq_current_filtered.q",
+      "id": 13
     },
     {
       "type": "f",
-      "name": "phase_voltage.a"
+      "name": "phase_voltage.a",
+      "id": 14
     },
     {
       "type": "f",
-      "name": "phase_voltage.b"
+      "name": "phase_voltage.b",
+      "id": 15
     },
     {
       "type": "f",
-      "name": "phase_voltage.c"
+      "name": "phase_voltage.c",
+      "id": 16
     },
     {
       "type": "f",
-      "name": "ab_voltage.alpha"
+      "name": "ab_voltage.alpha",
+      "id": 17
     },
     {
       "type": "f",
-      "name": "ab_voltage.beta"
+      "name": "ab_voltage.beta",
+      "id": 18
     },
     {
       "type": "f",
-      "name": "dq_voltage.d"
+      "name": "dq_voltage.d",
+      "id": 19
     },
     {
       "type": "f",
-      "name": "dq_voltage.q"
+      "name": "dq_voltage.q",
+      "id": 20
     },
     {
       "type": "f",
-      "name": "encoder_angle_mechanical_wrapped"
+      "name": "encoder_angle_mechanical_wrapped",
+      "id": 21
     },
     {
       "type": "f",
-      "name": "encoder_angle_mechanical_unwrapped"
+      "name": "encoder_angle_mechanical_unwrapped",
+      "id": 22
     },
     {
       "type": "f",
-      "name": "encoder_speed_mechanical"
+      "name": "encoder_speed_mechanical",
+      "id": 23
     },
     {
       "type": "f",
-      "name": "encoder_angle_electrical"
+      "name": "encoder_angle_electrical",
+      "id": 24
     },
     {
       "type": "f",
-      "name": "encoder_speed_electrical"
+      "name": "encoder_speed_electrical",
+      "id": 25
     },
     {
       "type": "f",
-      "name": "dq_current_setpoint.d"
+      "name": "dq_current_setpoint.d",
+      "id": 26
     },
     {
       "type": "f",
-      "name": "dq_current_setpoint.q"
+      "name": "dq_current_setpoint.q",
+      "id": 27
     },
     {
       "type": "f",
-      "name": "angle_setpoint"
+      "name": "angle_setpoint",
+      "id": 28
     },
     {
       "type": "f",
-      "name": "speed_setpoint"
+      "name": "speed_setpoint",
+      "id": 29
     },
     {
       "type": "u32",
-      "name": "execution_time.loop_max"
-    },
-    {
-      "type": "f",
-      "name": "hfi.injection_phase"
-    },
-    {
-      "type": "f",
-      "name": "hfi.i_alpha_l_raw"
-    },
-    {
-      "type": "f",
-      "name": "hfi.i_beta_l_raw"
-    },
-    {
-      "type": "f",
-      "name": "hfi.i_alpha_l_filtered"
-    },
-    {
-      "type": "f",
-      "name": "hfi.i_beta_l_filtered"
-    },
-    {"type":"f","name":"hfi.angle_axis_mod_pi"},
-    {"type":"f","name":"hfi.angle_electrical"},
-    {"type":"f","name":"hfi.angle_mechanical_unwrapped"},
-    {"type":"f","name":"hfi.speed_mechanical"},
-    {"type":"f","name":"hfi.error_electrical"},
-    {"type":"f","name":"hfi.error_mechanical"},
-    {"type":"f","name":"hfi.signal_amplitude"},
-    {"type":"f","name":"hfi.saliency_ratio"},
-    {"type":"u32","name":"hfi.status"}
+      "name": "execution_time.loop_max",
+      "id": 30
+    }
   ],
   "variables": [],
   "pids": [
@@ -194,27 +211,205 @@
         0.1,
         0
       ]
-    }
+    },
+    {"name": "pid_anticogging", "default": [10, 20, 0.2]}
   ],
   "configuration": [
-    {"id":0,"group_id":0,"group":"Limits","type":"f","minimum":"0.001","maximum":"30","unit":"A","states":16896,"name":"limits.max_dq_current","label":"Maximum d/q current","default":5},
-    {"id":1,"group_id":0,"group":"Limits","type":"f","minimum":"0.001","maximum":"17.320509","unit":"V","states":16896,"name":"limits.max_dq_voltage","label":"Maximum d/q voltage","default":8},
-    {"id":2,"group_id":0,"group":"Limits","type":"f","minimum":"8","maximum":"30","unit":"V","states":16896,"name":"limits.vbus_overvoltage_trip_level","label":"Bus overvoltage trip","default":27},
-    {"id":3,"group_id":0,"group":"Limits","type":"f","minimum":"8","maximum":"30","unit":"V","states":16896,"name":"limits.vbus_undervoltage_trip_level","label":"Bus undervoltage trip","default":20},
-    {"id":4,"group_id":0,"group":"Limits","type":"f","minimum":"0.001","maximum":"30","unit":"A","states":16896,"name":"limits.ibus_overcurrent_trip_level","label":"Bus overcurrent trip","default":1},
-    {"id":5,"group_id":0,"group":"Limits","type":"f","minimum":"0","maximum":"60","unit":"degC","states":16896,"name":"limits.motor_temp_trip_level","label":"Motor temperature trip","default":60},
-    {"id":6,"group_id":0,"group":"Limits","type":"f","minimum":"0","maximum":"80","unit":"degC","states":16896,"name":"limits.mosfet_temp_trip_level","label":"MOSFET temperature trip","default":80},
-    {"id":7,"group_id":1,"group":"Motor","type":"u32","minimum":"1","maximum":"255","unit":"-","states":16384,"name":"motor.pole_pairs","label":"Pole pairs","default":11},
-    {"id":8,"group_id":1,"group":"Motor","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"motor.direction","label":"Reverse direction","default":0},
-    {"id":9,"group_id":1,"group":"Motor","type":"f","minimum":"0.000001","maximum":"1000","unit":"ohm","states":16384,"name":"motor.phase_resistance","label":"Phase resistance","default":0.2},
-    {"id":10,"group_id":1,"group":"Motor","type":"f","minimum":"0.000000001","maximum":"10","unit":"H","states":16384,"name":"motor.phase_inductance","label":"Phase inductance","default":0.000025},
-    {"id":11,"group_id":1,"group":"Motor","type":"f","minimum":"0.000001","maximum":"1000","unit":"Nm/A","states":16384,"name":"motor.torque_constant","label":"Torque constant","default":0.02},
-    {"id":12,"group_id":2,"group":"Controller","type":"f","minimum":"0.001","maximum":"5000","unit":"rad/s","states":16384,"name":"controller.current_control_bandwidth","label":"Current-control bandwidth","default":500},
-    {"id":13,"group_id":2,"group":"Controller","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"controller.current_PID_FF_enabled","label":"Current feed-forward","default":0},
-    {"id":14,"group_id":3,"group":"HFI","type":"bool","minimum":"0","maximum":"1","unit":"-","states":16384,"name":"hfi.hfi_enabled","label":"Enable HFI injection","default":0},
-    {"id":15,"group_id":3,"group":"HFI","type":"f","minimum":"0","maximum":"17.320509","unit":"V","states":16384,"name":"hfi.injection_amplitude","label":"Injection amplitude","default":0.2},
-    {"id":16,"group_id":3,"group":"HFI","type":"f","minimum":"3141.5927","maximum":"12566.371","unit":"rad/s","states":16384,"name":"hfi.injection_omega","label":"Injection angular frequency","default":6283.185},
-    {"id":17,"group_id":4,"group":"Encoder","type":"f","minimum":"0.001","maximum":"17.320509","unit":"V","states":16384,"name":"encoder.calibration_voltage","label":"Calibration voltage","default":0.5}
+    {
+      "id": 0,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "0.001",
+      "maximum": "30",
+      "unit": "A",
+      "states": 16896,
+      "name": "limits.max_dq_current",
+      "label": "Maximum d/q current",
+      "default": 5
+    },
+    {
+      "id": 1,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "0.001",
+      "maximum": "17.320509",
+      "unit": "V",
+      "states": 16896,
+      "name": "limits.max_dq_voltage",
+      "label": "Maximum d/q voltage",
+      "default": 8
+    },
+    {
+      "id": 2,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "8",
+      "maximum": "30",
+      "unit": "V",
+      "states": 16896,
+      "name": "limits.vbus_overvoltage_trip_level",
+      "label": "Bus overvoltage trip",
+      "default": 27
+    },
+    {
+      "id": 3,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "8",
+      "maximum": "30",
+      "unit": "V",
+      "states": 16896,
+      "name": "limits.vbus_undervoltage_trip_level",
+      "label": "Bus undervoltage trip",
+      "default": 20
+    },
+    {
+      "id": 4,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "0.001",
+      "maximum": "30",
+      "unit": "A",
+      "states": 16896,
+      "name": "limits.ibus_overcurrent_trip_level",
+      "label": "Bus overcurrent trip",
+      "default": 1
+    },
+    {
+      "id": 5,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "0",
+      "maximum": "60",
+      "unit": "degC",
+      "states": 16896,
+      "name": "limits.motor_temp_trip_level",
+      "label": "Motor temperature trip",
+      "default": 60
+    },
+    {
+      "id": 6,
+      "group_id": 0,
+      "group": "Limits",
+      "type": "f",
+      "minimum": "0",
+      "maximum": "80",
+      "unit": "degC",
+      "states": 16896,
+      "name": "limits.mosfet_temp_trip_level",
+      "label": "MOSFET temperature trip",
+      "default": 80
+    },
+    {
+      "id": 7,
+      "group_id": 1,
+      "group": "Motor",
+      "type": "u32",
+      "minimum": "1",
+      "maximum": "255",
+      "unit": "-",
+      "states": 16384,
+      "name": "motor.pole_pairs",
+      "label": "Pole pairs",
+      "default": 11
+    },
+    {
+      "id": 8,
+      "group_id": 1,
+      "group": "Motor",
+      "type": "bool",
+      "minimum": "0",
+      "maximum": "1",
+      "unit": "-",
+      "states": 16384,
+      "name": "motor.direction",
+      "label": "Reverse direction",
+      "default": 0
+    },
+    {
+      "id": 9,
+      "group_id": 1,
+      "group": "Motor",
+      "type": "f",
+      "minimum": "0.000001",
+      "maximum": "1000",
+      "unit": "ohm",
+      "states": 16384,
+      "name": "motor.phase_resistance",
+      "label": "Phase resistance",
+      "default": 0.2
+    },
+    {
+      "id": 10,
+      "group_id": 1,
+      "group": "Motor",
+      "type": "f",
+      "minimum": "0.000000001",
+      "maximum": "10",
+      "unit": "H",
+      "states": 16384,
+      "name": "motor.phase_inductance",
+      "label": "Phase inductance",
+      "default": 0.000025
+    },
+    {
+      "id": 11,
+      "group_id": 1,
+      "group": "Motor",
+      "type": "f",
+      "minimum": "0.000001",
+      "maximum": "1000",
+      "unit": "Nm/A",
+      "states": 16384,
+      "name": "motor.torque_constant",
+      "label": "Torque constant",
+      "default": 0.02
+    },
+    {
+      "id": 12,
+      "group_id": 2,
+      "group": "Controller",
+      "type": "f",
+      "minimum": "0.001",
+      "maximum": "5000",
+      "unit": "rad/s",
+      "states": 16384,
+      "name": "controller.current_control_bandwidth",
+      "label": "Current-control bandwidth",
+      "default": 500
+    },
+    {
+      "id": 13,
+      "group_id": 2,
+      "group": "Controller",
+      "type": "bool",
+      "minimum": "0",
+      "maximum": "1",
+      "unit": "-",
+      "states": 16384,
+      "name": "controller.current_PID_FF_enabled",
+      "label": "Current feed-forward",
+      "default": 0
+    },
+    {
+      "id": 14,
+      "group_id": 3,
+      "group": "Encoder",
+      "type": "f",
+      "minimum": "0.001",
+      "maximum": "17.320509",
+      "unit": "V",
+      "states": 16384,
+      "name": "encoder.calibration_voltage",
+      "label": "Calibration voltage",
+      "default": 0.5
+    }
   ],
   "can_cyclic": [
     {
