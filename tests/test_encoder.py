@@ -56,11 +56,13 @@ class EncoderProtocolTests(unittest.TestCase):
 
             send(MsgType.MSG_GET_ENCODER_INFO)
             sources = h.simulator._encoder_sources
-            self.assertEqual([source.source_id for source in sources], [0, 1, 2, 3])
+            self.assertEqual([source.source_id for source in sources], [0, 1, 2, 3, 4])
             self.assertIn("quadrature", sources[0].name)
             self.assertIn("SPI DMA", sources[1].name)
             self.assertIn("External", sources[2].name)
             self.assertIn("quadrature", sources[3].name)
+            self.assertEqual(sources[4].name, "Internal simulator")
+            self.assertFalse(sources[4].calibratable)
             send(MsgType.MSG_SET_ENCODER_SOURCE, EncoderSourcePayload(3))
             self.assertEqual(h.simulator._encoder_source, 3)
             self.assertFalse(h.simulator._encoder_flags & 7)

@@ -126,7 +126,7 @@ class CodecTests(unittest.TestCase):
                   MsgType.MSG_DEVICE_INFO_REPLY, MsgType.MSG_GET_DEFINITIONS,
                   MsgType.MSG_DEFINITIONS_REPLY, MsgType.MSG_DEFINITIONS_ERROR, MsgType.MSG_LOG_DATA]
         self.assertEqual(list(map(int, prefix)), list(range(7)))
-        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x3E)))
+        self.assertEqual([int(message) for message in MsgType if message < 0xFA], list(range(0x41)))
         self.assertEqual(int(MsgType.MSG_UNKNOWN_TYPE), 0xFA)
         self.assertEqual(int(MsgType.MSG_ERROR), 0xFF)
         self.assertFalse(hasattr(MsgType, "MSG_GET_VERSION"))
@@ -149,7 +149,7 @@ class DiscoveryTests(unittest.TestCase):
         self.h.simulator._emit_log_packet()
         self.assertEqual(set(self.h.logs[-1].signals), {"tick", "adc_values.motor_temp"})
         self.assertEqual(len(self.h.session.definitions.variables), 0)
-        self.assertEqual(len(self.h.session.definitions.pids), 4)
+        self.assertEqual(len(self.h.session.definitions.pids), len(fixture()["pids"]))
 
     def test_restart_uses_persisted_cache_and_names(self):
         self.h.start(["tick"])

@@ -1,4 +1,6 @@
 """Calibration progress and explicitly downloaded, editable compensation tables."""
+from ui.setup_panel import SetupPanel
+
 import math
 import time
 import struct
@@ -14,7 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, Q
 from calibration_protocol import CalibrationInfo, CalibrationTable, CHUNK, ERROR_NAMES, STAGES
 from protocol_codec import Packet, StatePayload, VarPayload, PIDPayload
 from protocol_definitions import MsgType, FOCState
-from configuration_protocol import decode_configuration
+from configuration_protocol import decode_configuration, encode_configuration
 
 
 class TableEditor(QWidget):
@@ -263,6 +265,7 @@ class CalibrationDock(QDockWidget):
         basics.encoder_correction_button.hide()
         basics.encoder_status_label.hide()
         self.tabs = QTabWidget()
+        self.calibration_current_entry = None
         self.anticog_pid_id = None
         self.anticog_gain_inputs = []
         self._build_motor_setup()
@@ -292,6 +295,21 @@ class CalibrationDock(QDockWidget):
             stop.clicked.connect(lambda: basics._send_state(FOCState.FOC_STATE_STOP))
             row.addWidget(stop)
             page_layout.addLayout(row)
+            if kind == 0:
+                current_row = QHBoxLayout()
+                current_row.addWidget(QLabel("Calibration D current"))
+                self.calibration_current = QDoubleSpinBox()
+                self.calibration_current.setDecimals(3)
+                self.calibration_current.setRange(0.001, 30)
+                self.calibration_current.setValue(0.25)
+                self.calibration_current.setSuffix(" A")
+                self.calibration_current_read = QPushButton("Read current")
+                self.calibration_current_apply = QPushButton("Apply D current")
+                self.calibration_current_read.clicked.connect(self.read_calibration_current)
+                self.calibration_current_apply.clicked.connect(self.apply_calibration_current)
+                for control in (self.calibration_current, self.calibration_current_read, self.calibration_current_apply):
+                    current_row.addWidget(control)
+                page_layout.addLayout(current_row)
             if kind == 1:
                 gains_row = QHBoxLayout()
                 for label, default in (("Kp", 10.0), ("Ki", 20.0), ("Kd", 0.2)):
@@ -339,6 +357,8 @@ class CalibrationDock(QDockWidget):
             page_layout.addWidget(editor)
             self.buttons.append([start, stop, read, upload])
             self.tabs.addTab(page, name)
+        self.setup_page = SetupPanel(self)
+        self.tabs.addTab(self.setup_page, "Setup")
         layout.addWidget(self.tabs)
         self.transfer_status = QLabel("Table transfers require stationary IDLE/ERROR. Applied tables remain disabled until enabled.")
         self.transfer_status.setWordWrap(True)
@@ -413,6 +433,9 @@ class CalibrationDock(QDockWidget):
         self.result_variables.clear()
         self.result_configurations.clear()
         self.configuration_entries = list(configuration or [])
+        self.calibration_current_entry = next((e for e in self.configuration_entries if e["name"] == "encoder.calibration_current"), None)
+        if self.calibration_current_entry is not None:
+            self.calibration_current.setRange(float(self.calibration_current_entry["minimum"]), float(self.calibration_current_entry["maximum"]))
         self.result_pids.clear()
         variables_by_name = {entry["name"]: entry["id"] for entry in variables}
         configuration_by_name = {entry["name"]: entry["id"] for entry in self.configuration_entries}
@@ -431,7 +454,19 @@ class CalibrationDock(QDockWidget):
             label.setText(f"{axis}-axis current PI: {'Not read' if name in pids_by_name else 'Not exposed by this firmware'}")
             if name in pids_by_name:
                 self.result_pids[pids_by_name[name]] = label
+        self.setup_page.set_definitions(self.configuration_entries)
         self._permissions()
+
+    def read_calibration_current(self):
+        if self.connected and self.calibration_current_entry is not None:
+            self._send(Packet(MsgType.MSG_GET_CONFIGURATION, bytes((self.calibration_current_entry["group_id"],))))
+
+    def apply_calibration_current(self):
+        entry = self.calibration_current_entry
+        if entry is None or not self.calibration_current_apply.isEnabled():
+            return
+        payload = encode_configuration(self.configuration_entries, entry["group_id"], {entry["id"]: self.calibration_current.value()})
+        self._send(Packet(MsgType.MSG_SET_CONFIGURATION, payload), lambda success: self.read_calibration_current())
 
     def read_anticog_pid(self):
         if self.connected and self.anticog_pid_id is not None:
@@ -464,6 +499,7 @@ class CalibrationDock(QDockWidget):
             label.setText(f"{title}: {payload.value:.6g}{unit}")
 
     def on_setup_pid(self, payload: PIDPayload):
+        self.setup_page.on_pid(payload)
         if payload.controller_id == self.anticog_pid_id and all(v is not None for v in (payload.kp, payload.ki, payload.kd)):
             for field, value in zip(self.anticog_gain_inputs, (payload.kp, payload.ki, payload.kd)):
                 field.setValue(value)
@@ -478,6 +514,9 @@ class CalibrationDock(QDockWidget):
         if not self.connected or not self.configuration_entries:
             return
         _group, values = decode_configuration(self.configuration_entries, payload)
+        entry = self.calibration_current_entry
+        if entry is not None and entry["id"] in values:
+            self.calibration_current.setValue(values[entry["id"]])
         for identifier, value in values.items():
             target = self.result_configurations.get(identifier)
             if target is not None:
@@ -489,6 +528,7 @@ class CalibrationDock(QDockWidget):
             self.active_errors = active
         if latched is not None:
             self.latched_errors = latched
+        self.setup_page.set_errors(self.active_errors, self.latched_errors)
         self._permissions()
 
     def start_setup(self, state: FOCState):
@@ -549,6 +589,7 @@ class CalibrationDock(QDockWidget):
         self.routine_result.setText("Waiting for test/calibration result" if connected else "Disconnected; reconnect to read the retained result.")
         self.generation += 1
         self.connected = connected
+        self.setup_page.set_connected(connected)
         self.transfer = None
         self.info.clear()
         self.state = None
@@ -576,7 +617,7 @@ class CalibrationDock(QDockWidget):
         self._permissions()
 
     def refresh(self):
-        if self.connected and self.transfer is None and (self.isVisible() or any(i.flags & 4 for i in self.info.values())):
+        if self.connected and self.transfer is None and (self.isVisible() or self.setup_page.isVisible() or self.setup_page.running or any(i.flags & 4 for i in self.info.values())):
             for kind in (0, 1):
                 self._send(Packet(MsgType.MSG_GET_CALIBRATION_INFO, bytes((kind,))))
 
@@ -586,8 +627,10 @@ class CalibrationDock(QDockWidget):
 
     def on_routine_result(self, text):
         self.routine_result.setText(text or "No routine result recorded since boot.")
+        self.setup_page.details.setText(text or "No routine result recorded since boot.")
 
     def set_state(self, state):
+        self.setup_page.set_state(state)
         previous = self.state
         self.state = state
         requested_state_reply = self.await_setup_state
@@ -605,11 +648,12 @@ class CalibrationDock(QDockWidget):
             self.read_setup_values()
             self.read_routine_result()
             self.read_anticog_pid()
+            self.read_calibration_current()
 
     def _permissions(self):
-        self.basics._calibration_transfer_busy = self.transfer is not None
+        self.basics._calibration_transfer_busy = self.transfer is not None or self.setup_page.running
         self.basics._refresh_encoder_controls()
-        safe = self.connected and self.state in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR) and self.transfer is None and not self.setup_pending
+        safe = self.connected and self.state in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_ERROR) and self.transfer is None and not self.setup_pending and not self.setup_page.running
         uploading = any(info.flags & 8 for info in self.info.values())
         if not self.connected:
             blocked = "Not connected. Connect to the driver first."
@@ -632,6 +676,11 @@ class CalibrationDock(QDockWidget):
             control.setToolTip(action if enabled else reason)
 
         faults_clear = self.active_errors == 0 and self.latched_errors == 0
+        can_edit_current = safe and not uploading and self.state == FOCState.FOC_STATE_IDLE and faults_clear and self.calibration_current_entry is not None
+        self.calibration_current.setEnabled(can_edit_current)
+        self.calibration_current_apply.setEnabled(can_edit_current)
+        self.calibration_current_read.setEnabled(self.connected and self.calibration_current_entry is not None and self.transfer is None)
+        self.calibration_current_apply.setToolTip("Apply D current in amperes. It must not exceed the driver current limit. Save settings for persistence.")
         can_edit_gains = safe and not uploading and self.state == FOCState.FOC_STATE_IDLE and faults_clear and self.anticog_pid_id is not None
         self.anticog_pid_apply.setEnabled(can_edit_gains)
         self.anticog_pid_read.setEnabled(self.connected and self.anticog_pid_id is not None and self.transfer is None)
@@ -692,6 +741,7 @@ class CalibrationDock(QDockWidget):
         self.info[info.kind] = info
         self._update_time_estimate(info, previous)
         self.progress[info.kind].setValue(info.progress)
+        self.setup_page.on_calibration_info(info)
         self.status[info.kind].setText(f"{STAGES[info.kind][info.stage]}; {'valid table' if info.flags & 1 else 'no valid table'}; "
                                      f"{'enabled' if info.flags & 2 else 'disabled'}" +
                                      (f". {ERROR_NAMES[info.error]} (code {info.error})" if info.error else ""))

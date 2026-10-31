@@ -1,4 +1,6 @@
 """One outstanding command; discover or validate cached metadata before telemetry."""
+from setup_protocol import SetupStatus
+
 from collections import deque
 from dataclasses import replace
 import struct
@@ -12,6 +14,7 @@ from configuration_protocol import decode_configuration
 from protocol_definitions import MsgType, ERROR_REPLY_TYPES
 
 REPLIES = {
+    MsgType.MSG_GET_SETUP_STATUS: MsgType.MSG_SETUP_STATUS_REPLY,
     MsgType.MSG_GET_ROUTINE_RESULT: MsgType.MSG_ROUTINE_RESULT_REPLY,
     MsgType.MSG_GET_CONFIGURATION: MsgType.MSG_CONFIGURATION_REPLY,
     MsgType.MSG_GET_TARGETS: MsgType.MSG_TARGETS_REPLY,
@@ -248,6 +251,8 @@ class ProtocolSession:
                         raise ValueError("Configuration reply group mismatch")
                 if expected == MsgType.MSG_TARGETS_REPLY and len(raw.payload_bytes) != 16:
                     raise ValueError("Malformed targets reply")
+                if expected == MsgType.MSG_SETUP_STATUS_REPLY:
+                    SetupStatus.decode(raw.payload_bytes)
                 if expected == MsgType.MSG_ENCODER_INFO_REPLY:
                     EncoderInfoPayload.decode(raw.payload_bytes)
                 if expected == MsgType.MSG_CALIBRATION_INFO_REPLY:

@@ -19,6 +19,11 @@
       "id": 3,
       "name": "External AS5047P quadrature",
       "calibratable": true
+    },
+    {
+      "id": 4,
+      "name": "Internal simulator",
+      "calibratable": false
     }
   ],
   "signals": [
@@ -212,7 +217,14 @@
         0
       ]
     },
-    {"name": "pid_anticogging", "default": [10, 20, 0.2]}
+    {
+      "name": "pid_anticogging",
+      "default": [
+        10,
+        20,
+        0.2
+      ]
+    }
   ],
   "configuration": [
     {
@@ -356,7 +368,7 @@
       "states": 16384,
       "name": "motor.phase_inductance",
       "label": "Phase inductance",
-      "default": 0.000025
+      "default": 2.5e-05
     },
     {
       "id": 11,
@@ -403,12 +415,12 @@
       "group": "Encoder",
       "type": "f",
       "minimum": "0.001",
-      "maximum": "17.320509",
-      "unit": "V",
+      "maximum": "30",
+      "unit": "A",
       "states": 16384,
-      "name": "encoder.calibration_voltage",
-      "label": "Calibration voltage",
-      "default": 0.5
+      "name": "encoder.calibration_current",
+      "label": "Calibration D current",
+      "default": 0.25
     }
   ],
   "can_cyclic": [

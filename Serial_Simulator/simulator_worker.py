@@ -1,6 +1,7 @@
 """Threaded, protocol-compatible simulated motor driver."""
 
 from __future__ import annotations
+from setup_protocol import SetupStatus
 
 import math
 import json
@@ -101,6 +102,13 @@ class SimulatorWorker:
         self._stop_event = threading.Event()
         self._logging = False
         self._state = int(FOCState.FOC_STATE_IDLE)
+        self._setup_sequence = 0
+        self._setup_routine = 0
+        self._setup_status = 0
+        self._setup_error = 0
+        self._setup_started = 0
+        self._setup_voltage = 0.5
+        self._setup_text = ""
         self._control_mode: ControlMode | None = None
         self._timestamp = 0
         self._started_at = time.monotonic()
@@ -351,12 +359,26 @@ class SimulatorWorker:
                 if "flash_data." + entry["name"] == meta["name"]:
                     self._configuration[entry["id"]] = self._variables[var_id]
             self._ack(msg_type)
+        elif msg_type == MsgType.MSG_GET_SETUP_STATUS:
+            if payload:
+                self._invalid_payload(msg_type); return
+            self._setup_tick()
+            self._reply(MsgType.MSG_SETUP_STATUS_REPLY, SetupStatus(self._setup_sequence, self._setup_routine,
+                self._setup_status, self._setup_error, self._state, self._active_errors, self._latched_errors, self._setup_voltage).encode())
+        elif msg_type == MsgType.MSG_SET_SETUP_VOLTAGE:
+            if len(payload) != 4:
+                self._invalid_payload(msg_type); return
+            voltage = struct.unpack("<f", payload)[0]
+            limit = self._setup_configuration("limits.max_dq_voltage")
+            if self._state != FOCState.FOC_STATE_IDLE or self._active_errors or self._latched_errors or not math.isfinite(voltage) or not 0 < voltage <= limit:
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.OUT_OF_RANGE, "Setup voltage requires fault-free IDLE and a value within the voltage limit."); return
+            self._setup_voltage = voltage; self._ack(msg_type)
         elif msg_type == MsgType.MSG_GET_ROUTINE_RESULT:
             if payload:
                 self._invalid_payload(msg_type)
                 return
             self._reply(MsgType.MSG_ROUTINE_RESULT_REPLY,
-                        b"Simulator: no hardware routine result. Magnetic-field diagnostics unavailable in simulation.")
+                        (self._setup_text + "\nSimulator: no hardware routine result. Magnetic-field diagnostics unavailable in simulation.").encode("utf-8"))
         elif msg_type == MsgType.MSG_TEXT_COMMAND:
             if not self.info.debug_writes:
                 self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Legacy debug text commands are disabled.")
@@ -397,6 +419,10 @@ class SimulatorWorker:
                                 f"{'Active' if active else 'Latched'} faults prevent state changes: "
                                 f"0x{(self._active_errors if active else self._latched_errors):08X}.")
                     return
+                if state == FOCState.FOC_STATE_MOTOR_PROBE:
+                    source = next(s for s in self._encoder_sources if s.source_id == self._encoder_source)
+                    if self._state != FOCState.FOC_STATE_IDLE or not source.calibratable or not self._encoder_flags & 8:
+                        self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "Detection requires physical encoder and healthy IDLE."); return
                 if state == FOCState.FOC_STATE_ENCODER_CALIBRATION:
                     source = next(s for s in self._encoder_sources if s.source_id == self._encoder_source)
                     if self._state != FOCState.FOC_STATE_IDLE or self._encoder_flags & 12 != 12 or not source.calibratable:
@@ -415,6 +441,12 @@ class SimulatorWorker:
                     self._anti_stage = 8
                 previous_state = self._state
                 self._state = int(state)
+                if state in (FOCState.FOC_STATE_MOTOR_PROBE, FOCState.FOC_STATE_ALIGNMENT,
+                             FOCState.FOC_STATE_IDENTIFY, FOCState.FOC_STATE_PID_AUTOTUNE,
+                             FOCState.FOC_STATE_ENCODER_CALIBRATION, FOCState.FOC_STATE_ALIGNMENT_TEST):
+                    self._setup_begin(state)
+                elif self._setup_sequence and self._setup_status == 0 and state in (FOCState.FOC_STATE_STOP, FOCState.FOC_STATE_IDLE):
+                    self._setup_status = 3
                 if (
                     previous_state == int(FOCState.FOC_STATE_RUN)
                     and self._state != int(FOCState.FOC_STATE_RUN)
@@ -600,6 +632,50 @@ class SimulatorWorker:
             self._state = int(FOCState.FOC_STATE_BOOTLOADER)
         self._ack(command)
 
+    def _setup_configuration(self, name, value=None):
+        entry = next(e for e in self.definitions.configuration if e["name"] == name)
+        if value is not None: self._configuration[entry["id"]] = value
+        return self._configuration[entry["id"]]
+
+    def _setup_begin(self, state):
+        self._setup_sequence = (self._setup_sequence + 1) & 0xFFFFFFFF
+        self._setup_routine = int(state); self._setup_status = 0; self._setup_error = 0
+        self._setup_started = time.monotonic()
+
+    def _setup_tick(self):
+        if self._setup_sequence and self._setup_status == 0:
+            routine = self._setup_routine
+            completed = False
+            if self._active_errors or self._latched_errors or self._state == FOCState.FOC_STATE_ERROR:
+                self._setup_status = 2; self._setup_error = 7
+            elif routine == FOCState.FOC_STATE_ENCODER_CALIBRATION:
+                completed = self._encoder_stage == 6
+                if self._encoder_stage in (7,8): self._setup_status = 2 if self._encoder_stage == 7 else 3
+            elif routine == FOCState.FOC_STATE_ANTICOGGING:
+                completed = self._anti_stage == 6
+                if self._anti_stage in (7,8): self._setup_status = 2 if self._anti_stage == 7 else 3
+            elif time.monotonic() - self._setup_started >= 0.1:
+                completed = True
+                if routine == FOCState.FOC_STATE_MOTOR_PROBE:
+                    self._setup_configuration("motor.pole_pairs", 11)
+                    self._setup_configuration("motor.direction", 0)
+                    self._encoder_flags &= 8; self._anti_flags = 0
+                elif routine == FOCState.FOC_STATE_ALIGNMENT:
+                    self._encoder_flags |= 4; self._anti_flags = 0
+                elif routine == FOCState.FOC_STATE_IDENTIFY:
+                    self._setup_configuration("motor.phase_resistance", 0.2)
+                    self._setup_configuration("motor.phase_inductance", 0.000025)
+                elif routine == FOCState.FOC_STATE_PID_AUTOTUNE:
+                    for e in self.definitions.pids:
+                        if e["name"] in ("pid_current_d", "pid_current_q"): self._pids[e["id"]] = (0.01, 5.0, 0)
+            if completed:
+                self._setup_status = 1; self._state = int(FOCState.FOC_STATE_IDLE)
+                self._setup_text = "Routine result: Simulated setup operation completed. No hardware physics validated."
+            elif self._setup_status in (2,3):
+                self._setup_text = "Routine result: Simulated setup operation failed/cancelled."
+        if self._state == FOCState.FOC_STATE_STOP:
+            self._state = int(FOCState.FOC_STATE_IDLE)
+
     def _check_errors(self) -> None:
         """Latch simulated active inputs and recover ERROR to STOP after clear."""
         self._latched_errors |= self._active_errors
@@ -678,6 +754,7 @@ class SimulatorWorker:
                 self._cal_rounds[kind] = payload[1]
                 if kind:
                     self._state = int(FOCState.FOC_STATE_ANTICOGGING)
+                    self._setup_begin(FOCState.FOC_STATE_ANTICOGGING)
                     self._anti_started = time.monotonic()
                     self._anti_flags = self._anti_progress = self._anti_error = 0
                     self._anti_stage = 1
@@ -872,9 +949,9 @@ class SimulatorWorker:
                 if fields[0]["group"] == "Limits" and names["limits.max_dq_voltage"] > names["limits.vbus_undervoltage_trip_level"] / math.sqrt(3):
                     raise ValueError("Voltage limit must fit undervoltage trip / sqrt(3).")
                 if fields[0]["group"] in ("Limits", "Encoder"):
-                    voltage = names.get("limits.max_dq_voltage", math.inf)
-                    if names.get("encoder.calibration_voltage", 0) > voltage:
-                        raise ValueError("Injection/calibration voltage exceeds the voltage limit.")
+                    current = names.get("limits.max_dq_current", math.inf)
+                    if names.get("encoder.calibration_current", 0) > current:
+                        raise ValueError("Calibration D current exceeds the current limit.")
                 if names.get("controller.current_PID_FF_enabled", 0) and fields[0]["group"] == "Controller":
                     if names.get("motor.phase_resistance", 0) <= 0 or names.get("motor.phase_inductance", 0) <= 0:
                         raise ValueError("Current feed-forward requires positive motor R/L.")

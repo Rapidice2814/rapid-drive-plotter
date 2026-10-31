@@ -73,7 +73,7 @@ clear; a present fault immediately relatches. Recovery does not resume RUN.
 
 The Configuration tab generates grouped forms from the connected driver's
 metadata. Current groups are Limits, Motor, Controller, and Encoder
-calibration voltage. Read a group, edit one or more fields, then apply its edits
+calibration D current. Read a group, edit one or more fields, then apply its edits
 to RAM. The firmware validates the complete candidate group and applies all edits
 or none; rejection retains the local edits and reports the error in the terminal.
 Successful writes are read back. Saving to flash remains a separate explicit
@@ -268,3 +268,29 @@ Anti-cogging uses dedicated configurable PID gains, continuous targets and
 Apply anti-cogging gains in IDLE, and save settings to flash to retain them.
 Normal position gains are independent. All angle graphs, radial labels and table bins use radians.
 Forward/reverse disagreement is shown after downloading the table.
+
+Encoder calibration now regulates D current through the normal current loop
+using a generated transform angle, while reading the selected physical encoder.
+Calibration > Encoder provides **Calibration D current**, **Read current** and
+**Apply D current** controls (default 0.25 A). Apply in fault-free IDLE; save
+settings to retain it. Current PI gains must be configured first. The source
+list also includes **Internal simulator**; it is for virtual-angle tests and
+cannot be selected as the physical measurement for encoder calibration.
+
+## New motor Setup
+
+The Setup tab puts duplicated manual configuration controls first, then
+runs selected operations in order: combined encoder direction/pole-pair detection,
+encoder alignment, L/R measurement, current PI tuning, encoder calibration and
+optional anti-cogging. All steps default selected except anti-cogging. Individual
+Run step buttons are also available. Apply/read back manual limits and excitation
+settings first. Detection/alignment voltage defaults to 0.5 V and is RAM-only.
+
+The sequence waits for a fresh, matching driver success result and fault-free
+IDLE, rather than advancing on ACK or a stale result. Any rejection, fault,
+cancellation, unexpected result or disconnect stops it; reconnection never
+resumes motion. Stop and Clear faults controls are available at the top. Current
+calibration progress/ETA is shown while those steps run. Firmware protocol 12 is
+required. New tables remain disabled until explicitly enabled, and anti-cogging
+results still need a separate flash save. Enabling encoder correction after
+anti-cogging invalidates that table; rerun anti-cogging in the desired coordinates.

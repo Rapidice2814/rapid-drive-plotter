@@ -1,7 +1,9 @@
+
+from setup_protocol import SetupStatus
 from typing import Any, Callable, Protocol
 
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMainWindow, QDockWidget, QScrollArea
 from shiboken6 import isValid
 
 from protocol_codec import (
@@ -193,6 +195,15 @@ class PlotWindow(QMainWindow):
         self.calibration_dock = CalibrationDock(self.basics_dock,
             lambda packet, completed=None: self._command_sender(packet, completed=completed), self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.calibration_dock)
+        self.setup_dock = QDockWidget("Setup", self)
+        setup_page = self.calibration_dock.setup_page
+        self.calibration_dock.tabs.removeTab(self.calibration_dock.tabs.indexOf(setup_page))
+        setup_scroll = QScrollArea()
+        setup_scroll.setWidgetResizable(True)
+        setup_scroll.setWidget(setup_page)
+        self.setup_dock.setWidget(setup_scroll)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.setup_dock)
+
         self.configuration_dock = ConfigurationDock(
             lambda packet, completed=None: self._command_sender(packet, completed=completed), self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.configuration_dock)
@@ -212,6 +223,7 @@ class PlotWindow(QMainWindow):
         self.tabifyDockWidget(self.basics_dock, self.can_dock)
         self.tabifyDockWidget(self.basics_dock, self.calibration_dock)
         self.tabifyDockWidget(self.basics_dock, self.configuration_dock)
+        self.tabifyDockWidget(self.basics_dock, self.setup_dock)
         self.basics_dock.visibilityChanged.connect(self._on_basics_visibility_changed)
         self.pid_dock.visibilityChanged.connect(self._on_pid_visibility_changed)
         self.var_dock.visibilityChanged.connect(self._on_variables_visibility_changed)
@@ -426,6 +438,7 @@ class PlotWindow(QMainWindow):
         elif packet.msg_type == MsgType.MSG_CONFIGURATION_REPLY and isinstance(packet.data, bytes):
             self.configuration_dock.on_reply(packet.data)
             self.calibration_dock.on_setup_configuration(packet.data)
+            self.calibration_dock.setup_page.configuration.on_reply(packet.data)
 
         elif packet.msg_type == MsgType.MSG_TARGETS_REPLY and isinstance(packet.data, bytes):
             self.setpoint_dock.set_target_values(packet.data)
@@ -448,6 +461,7 @@ class PlotWindow(QMainWindow):
             self.calibration_dock.on_table(packet.data)
         elif packet.msg_type == MsgType.MSG_ENCODER_INFO_REPLY and isinstance(packet.data, EncoderInfoPayload):
             self.basics_dock.set_encoder_info(packet.data)
+            self.calibration_dock.setup_page.on_encoder_info(packet.data)
 
         elif packet.msg_type == MsgType.MSG_CONTROL_MODE_REPLY and isinstance(packet.data, ControlModePayload):
             self.basics_dock.set_control_mode(packet.data.mode)
@@ -468,6 +482,11 @@ class PlotWindow(QMainWindow):
             self.enqueue_text(packet.data.text)
             if packet.data.text.startswith("Routine result:"):
                 self.calibration_dock.on_routine_result(packet.data.text)
+
+        elif packet.msg_type == MsgType.MSG_SETUP_STATUS_REPLY and isinstance(packet.data, SetupStatus):
+            self.calibration_dock.set_state(packet.data.state)
+            self.calibration_dock.set_errors(active=packet.data.active_errors, latched=packet.data.latched_errors)
+            self.calibration_dock.setup_page.on_status(packet.data)
 
         elif packet.msg_type == MsgType.MSG_ROUTINE_RESULT_REPLY and isinstance(packet.data, TextPayload):
             self.calibration_dock.on_routine_result(packet.data.text)

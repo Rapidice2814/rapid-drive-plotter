@@ -3,8 +3,8 @@ from enum import IntEnum, IntFlag
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
-PROTOCOL_VERSION = 11
-SUPPORTED_PROTOCOL_VERSIONS = (6, 7, 8, 9, 10, 11)
+PROTOCOL_VERSION = 12
+SUPPORTED_PROTOCOL_VERSIONS = (6, 7, 8, 9, 10, 11, 12)
 
 
 class CommandErrorCode(IntEnum):
@@ -56,7 +56,8 @@ class FOCState(IntEnum):
     FOC_STATE_BOOTLOADER = 18
     FOC_STATE_OPENLOOP = 19
     FOC_STATE_ENCODER_CALIBRATION = 20
-    FOC_STATE_COUNT = 21
+    FOC_STATE_MOTOR_PROBE = 21
+    FOC_STATE_COUNT = 22
 
 
 class ControlMode(IntEnum):
@@ -94,6 +95,7 @@ class FOCError(IntFlag):
     FOC_ERROR_ENCODER_FAULT = 1 << 14
     FOC_ERROR_OPERATION_FAILED = 1 << 15
     FOC_ERROR_PHASE_OC = 1 << 16
+    FOC_ERROR_CURRENT_SENSE_SATURATION = 1 << 17
 
 
 # Keep user-facing descriptions alongside the bit definitions so the UI and
@@ -116,6 +118,7 @@ FOC_ERROR_LABELS = {
     FOCError.FOC_ERROR_ENCODER_FAULT: "Encoder fault",
     FOCError.FOC_ERROR_OPERATION_FAILED: "Operation failed",
     FOCError.FOC_ERROR_PHASE_OC: "Phase over-current",
+    FOCError.FOC_ERROR_CURRENT_SENSE_SATURATION: "Current sensor saturation",
 }
 
 
@@ -182,6 +185,9 @@ class MsgType(IntEnum):
     MSG_TARGETS_REPLY = 0x3B
     MSG_GET_ROUTINE_RESULT = 0x3C
     MSG_ROUTINE_RESULT_REPLY = 0x3D
+    MSG_GET_SETUP_STATUS = 0x3E
+    MSG_SETUP_STATUS_REPLY = 0x3F
+    MSG_SET_SETUP_VOLTAGE = 0x40
 
     MSG_UNKNOWN_TYPE = 0xFA
     MSG_INVALID_PAYLOAD = 0xFB

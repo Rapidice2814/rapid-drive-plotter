@@ -100,7 +100,7 @@ class DynamicUITests(unittest.TestCase):
         data["pids"].reverse()
         definitions = self.populate(data)
         self.assertEqual(len(self.window.signal_dock.signal_checkboxes), 31)
-        self.assertEqual(len(self.window.pid_dock.pid_widgets), 4)
+        self.assertEqual(len(self.window.pid_dock.pid_widgets), len(fixture()["pids"]))
         self.assertEqual(len(self.window.var_dock.var_widgets), 0)
         self.assertEqual(self.window.signal_dock.mask_bytes, 4)
         self.assertFalse(self.window.signal_dock.read_mask_button.isEnabled())
@@ -186,7 +186,7 @@ class DynamicUITests(unittest.TestCase):
         dock.set_driver_state(FOCState.FOC_STATE_RUN)
         button = dock.pid_refresh_btn
         button.click()
-        self.assertEqual(len(self.callbacks), 4)
+        self.assertEqual(len(self.callbacks), len(dock.controllers))
         for callback in self.callbacks[:-1]:
             callback(True)
             self.assertTrue(button.is_busy)

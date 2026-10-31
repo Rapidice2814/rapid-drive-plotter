@@ -1,6 +1,7 @@
 """Encode and decode packets for the device protocol."""
 
 from __future__ import annotations
+from setup_protocol import SetupStatus
 
 import logging
 import struct
@@ -395,6 +396,11 @@ class ProtocolCodec:
             except (ValueError, UnicodeError):
                 return Packet(msg_type_int, None)
 
+        if msg_type_int == MsgType.MSG_SETUP_STATUS_REPLY:
+            try:
+                return Packet(MsgType.MSG_SETUP_STATUS_REPLY, SetupStatus.decode(raw_packet.payload_bytes))
+            except ValueError:
+                return Packet(MsgType.MSG_SETUP_STATUS_REPLY, None)
         if msg_type_int in (MsgType.MSG_CONFIGURATION_REPLY, MsgType.MSG_TARGETS_REPLY):
             return Packet(MsgType(msg_type_int), raw_packet.payload_bytes)
 
@@ -465,6 +471,7 @@ class ProtocolCodec:
                 MsgType.MSG_GET_ENCODER_INFO,
                 MsgType.MSG_GET_TARGETS,
                 MsgType.MSG_GET_ROUTINE_RESULT,
+                MsgType.MSG_GET_SETUP_STATUS,
             }
             if msg_type not in empty_payload_types:
                 raise ValueError(f"{msg_type.name} requires a payload")

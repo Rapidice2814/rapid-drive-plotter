@@ -221,6 +221,24 @@ class CalibrationUITests(unittest.TestCase):
         self.dock.set_state(FOCState.FOC_STATE_ANTICOGGING)
         self.assertFalse(self.dock.anticog_pid_apply.isEnabled())
 
+    def test_encoder_calibration_d_current_is_discovered_editable_and_read_back(self):
+        self.window._handle_definitions((self.h.session.definitions, self.h.session.info,
+                                        bytes(self.h.session.info.mask_bytes), self.h.simulator))
+        entry = self.dock.calibration_current_entry
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["name"], "encoder.calibration_current")
+        self.assertEqual(entry["unit"], "A")
+        self.dock.read_calibration_current()
+        self.pump()
+        self.assertAlmostEqual(self.dock.calibration_current.value(), 0.25)
+        self.dock.calibration_current.setValue(0.6)
+        self.dock.apply_calibration_current()
+        self.pump()
+        self.assertAlmostEqual(self.h.simulator._configuration[entry["id"]], 0.6, places=5)
+        self.assertAlmostEqual(self.dock.calibration_current.value(), 0.6)
+        self.dock.set_state(FOCState.FOC_STATE_ENCODER_CALIBRATION)
+        self.assertFalse(self.dock.calibration_current_apply.isEnabled())
+
     def test_angles_are_displayed_in_radians(self):
         encoder = self.dock.editors[0]
         encoder.set_values([0, 0.01, 0, -0.01])
