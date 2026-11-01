@@ -8,7 +8,7 @@ from test_dynamic_ui import HAS_GUI
 from configuration_protocol import encode_configuration, decode_configuration, pack_value
 from device_definitions import Definitions, DeviceInfo, parse_rows
 from protocol_codec import Packet, RawPacket, VarPayload
-from protocol_definitions import MsgType, FOCState, ControlMode
+from protocol_definitions import MsgType, FOCState, ControlMode, PROTOCOL_VERSION
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(all(value == 0 for value in self.h.simulator._targets.values()))
 
     def test_schema_discovery_roundtrip_cache_and_bounds_in_fingerprint(self):
-        self.assertEqual(self.h.session.info.protocol, 12)
+        self.assertEqual(self.h.session.info.protocol, PROTOCOL_VERSION)
         self.assertEqual(len(self.h.session.info.encode()), 34)
         definitions = self.h.session.definitions
         self.assertEqual(parse_rows(4, definitions.text(4)),
@@ -100,27 +100,28 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(self.h.simulator._anti_flags, 0)
         self.assertFalse(self.h.simulator._encoder_flags & 7)
 
-    def test_legacy_v7_remains_readable_without_guessed_configuration(self):
-        h = Harness(self.directory)
-        definitions = Definitions(*h.simulator.definitions.lists()[:4])
-        h.simulator.definitions = definitions
-        h.simulator.info = replace(h.simulator.info, protocol=7, counts=h.simulator.info.counts[:4], fingerprint=definitions.fingerprint())
-        h.start()
-        self.assertIsNone(h.session.definitions.configuration)
-        self.assertEqual(len(h.session.info.encode()), 31)
-        self.assertEqual(DeviceInfo.decode(h.session.info.encode()).protocol, 7)
+
+    def test_only_current_protocol_is_accepted(self):
+        current = self.h.session.info.encode()
+        self.assertEqual(DeviceInfo.decode(current), self.h.session.info)
+        for version in range(PROTOCOL_VERSION):
+            with self.assertRaisesRegex(ValueError, "Incompatible protocol"):
+                DeviceInfo.decode(bytes((version,)) + current[1:])
+        for length in (29, 31, 33, 35):
+            with self.assertRaises(ValueError):
+                DeviceInfo.decode((current + b"\x00")[:length])
 
     def test_new_groups_and_fields_need_no_plotter_catalog_changes(self):
         data = fixture()
-        data["configuration"].append(dict(data["configuration"][0], id=15, group_id=9, group="Future group",
+        data["configuration"].append(dict(data["configuration"][0], id=len(data["configuration"]), group_id=9, group="Future group",
                                           name="future.extra", label="New setting", default=1))
         h = Harness(self.directory, data)
         h.start()
         self.assertEqual(h.codec.configuration_list[-1]["name"], "future.extra")
-        h.session.send(Packet(MsgType.MSG_SET_CONFIGURATION, encode_configuration(h.codec.configuration_list, 9, {15: 2})))
+        h.session.send(Packet(MsgType.MSG_SET_CONFIGURATION, encode_configuration(h.codec.configuration_list, 9, {len(data["configuration"]) - 1: 2})))
         h.drain()
         self.assertFalse(h.errors)
-        self.assertEqual(h.simulator._configuration[15], 2)
+        self.assertEqual(h.simulator._configuration[len(data["configuration"]) - 1], 2)
 
     def test_schema_validation_and_float32_boundary_encoding(self):
         entry = dict(self.h.codec.configuration_list[0], minimum="100000005e-11")
@@ -148,43 +149,32 @@ class ConfigurationUITests(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_generated_controls_state_permissions_and_atomic_apply(self):
+    def test_global_controls_apply_one_atomic_group_and_verify(self):
         from ui.configuration_panel import ConfigurationDock
-        entries = definitions_from(fixture()).configuration
-        sent, callbacks = [], []
-        def send(packet, *, completed):
-            sent.append(packet)
-            callbacks.append(completed)
-        dock = ConfigurationDock(send)
-        self.addCleanup(dock.deleteLater)
-        dock.set_definitions(entries)
-        dock.set_connected(True)
-        self.assertEqual(len(dock.widgets), 15)
-        for callback in list(callbacks):
-            callback(True)
-        self.app.processEvents()
-        dock.set_state(FOCState.FOC_STATE_IDLE)
-        values = {e["id"]: e["default"] for e in entries if e["group_id"] == 0}
-        dock.on_reply(encode_configuration(entries, 0, values))
-        dock.widgets[2].setText("18"); dock._edited(2)
-        dock.widgets[3].setText("12"); dock._edited(3)
-        self.assertTrue(dock.apply_buttons[0].isEnabled())
-        dock.apply(0)
-        self.assertEqual(sent[-1].msg_type, MsgType.MSG_SET_CONFIGURATION)
-        self.assertEqual(sent[-1].data, encode_configuration(entries, 0, {2: 18, 3: 12}))
-        self.assertFalse(dock.apply_buttons[0].isEnabled())
-        callbacks[-1](False)
-        self.app.processEvents()
-        self.assertEqual(dock.dirty, {2, 3})
-        dock.apply(0)
-        callbacks[-1](True)
-        self.app.processEvents()
-        self.assertFalse(dock.dirty)
-        self.assertEqual(sent[-1].msg_type, MsgType.MSG_GET_CONFIGURATION)
-        dock.set_state(FOCState.FOC_STATE_RUN)
-        self.assertFalse(dock.widgets[2].isEnabled())
-        dock.set_connected(False)
-        self.assertFalse(dock.values)
-        callbacks[-1](True)
-        self.app.processEvents()
-        self.assertFalse(dock.connected)
+        with tempfile.TemporaryDirectory() as directory:
+            h = Harness(directory); h.start()
+            dock = ConfigurationDock(h.session.send)
+            self.addCleanup(dock.deleteLater)
+            dock.set_definitions(h.session.definitions.configuration)
+            dock.set_connected(True)
+            dock.set_state(FOCState.FOC_STATE_IDLE)
+            def pump():
+                for _ in range(6): h.drain(); self.app.processEvents()
+            pump()
+            dock.widgets[2].setText("26"); dock._edited(2)
+            dock.widgets[3].setText("18"); dock._edited(3)
+            self.assertTrue(dock.apply_driver_button.isEnabled())
+            dock.apply_to_driver()
+            self.assertFalse(dock.apply_driver_button.isEnabled())
+            pump()
+            self.assertFalse(dock.has_unapplied_changes())
+            self.assertEqual(dock.values[2], 26)
+            self.assertEqual(dock.values[3], 18)
+            self.assertEqual(dock.dirty, {2, 3})  # Still differs from the read baseline.
+            dock.set_state(FOCState.FOC_STATE_RUN)
+            self.assertTrue(dock.widgets[2].isEnabled())
+            dock.set_connected(False)
+            self.assertFalse(dock.values)
+            self.assertFalse(dock.read_driver_button.isEnabled())
+            self.assertFalse(h.errors)
+            self.assertFalse(h.rejections)

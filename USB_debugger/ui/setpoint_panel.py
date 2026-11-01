@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from protocol_codec import ControlModePayload, Packet, VarPayload
+from protocol_codec import ControlModePayload, Packet
 from protocol_definitions import ControlMode, FOCState, MsgType
 
 
@@ -56,8 +56,6 @@ class SetpointDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("Setpoints", parent)
         self.on_command = on_command
-        self.variable_ids = {}
-        self.validated_api = False
         self._connected = False
         self._active_mode: str | None = None
         self._driver_state: FOCState | None = None
@@ -144,13 +142,6 @@ class SetpointDock(QDockWidget):
         self.setWidget(panel)
         self._update_controls_enabled()
 
-    def set_definitions(self, entries):
-        self.variable_ids = {entry["name"]: entry["id"] for entry in entries if entry["type"] == "f"}
-        self._clear_active_mode()
-
-    def set_validated_api(self, enabled):
-        self.validated_api = enabled
-        self._update_controls_enabled()
 
     def set_target_values(self, payload):
         values = struct.unpack("<ffff", payload)
@@ -159,28 +150,20 @@ class SetpointDock(QDockWidget):
             if widget is not None and not widget.hasFocus():
                 widget.setValue(value)
 
-    def _mode_available(self, key):
-        if self.validated_api:
-            return True
-        section = next(section for section in SETPOINT_SECTIONS if section["key"] == key)
-        return all(name in self.variable_ids for name, *_ in section["fields"])
 
     def _update_controls_enabled(self):
         in_run_state = self._driver_state == FOCState.FOC_STATE_RUN
         for key, button in self.mode_buttons.items():
-            button.setEnabled(self._connected and in_run_state and self._mode_available(key))
+            button.setEnabled(self._connected and in_run_state)
         for var_id, value in self.value_widgets.items():
             active = (
                 self._connected
-                and self.validated_api
                 and in_run_state
-                and (self.validated_api or var_id in self.variable_ids)
                 and self._active_mode == self.var_modes[var_id]
             )
             value.setEnabled(active)
             self.set_buttons[var_id].setEnabled(active)
-            self.set_buttons[var_id].setToolTip("Send a validated functional target." if self.validated_api else
-                                                "Validated targets require firmware USB protocol 8. Raw variable writes are debug-only.")
+            self.set_buttons[var_id].setToolTip("Send a validated functional target.")
 
     def _clear_active_mode(self):
         self._active_mode = None
@@ -243,8 +226,6 @@ class SetpointDock(QDockWidget):
         ):
             return
         section = next(item for item in SETPOINT_SECTIONS if item["key"] == mode)
-        if not self._mode_available(mode):
-            return
         self._active_mode = mode
         self._update_controls_enabled()
         self.on_command(
@@ -254,18 +235,7 @@ class SetpointDock(QDockWidget):
             )
         )
         self.on_command(Packet(msg_type=MsgType.MSG_GET_CONTROL_MODE, data=None))
-        if self.validated_api:
-            self.request_values()
-            return
-        # The driver's mode transition may reset its setpoint values. Read the
-        # active target(s) after queuing the mode command instead of assuming 0.
-        for var_id, _label, _suffix, _step in section["fields"]:
-            self.on_command(
-                Packet(
-                    msg_type=MsgType.MSG_GET_VAR,
-                    data=VarPayload(var_id=self.variable_ids[var_id], value=None),
-                )
-            )
+        self.request_values()
 
     def set_control_mode(self, mode_value: int | ControlMode):
         if not self._connected or self._driver_state != FOCState.FOC_STATE_RUN:
@@ -279,7 +249,7 @@ class SetpointDock(QDockWidget):
         section = next(
             (item for item in SETPOINT_SECTIONS if item["mode"] == mode), None
         )
-        if section is None or not self._mode_available(section["key"]):
+        if section is None:
             self._clear_active_mode()
             return
 
@@ -292,38 +262,15 @@ class SetpointDock(QDockWidget):
         # A mode change may reset the driver's target. Read the newly active
         # setpoint(s) so the editor reflects the actual values, not stale ones.
         if mode_changed:
-            if self.validated_api:
-                self.request_values()
-                return
-            for var_id, _label, _suffix, _step in section["fields"]:
-                self.on_command(
-                    Packet(
-                        msg_type=MsgType.MSG_GET_VAR,
-                        data=VarPayload(var_id=self.variable_ids[var_id], value=None),
-                    )
-                )
+            self.request_values()
 
     def request_values(self):
-        if not self._connected:
-            return
-        if self.validated_api:
+        if self._connected:
             self.on_command(Packet(MsgType.MSG_GET_TARGETS, None))
-            return
-        for section in SETPOINT_SECTIONS:
-            for var_id, _label, _suffix, _step in section["fields"]:
-                if var_id not in self.variable_ids:
-                    continue
-                self.on_command(
-                    Packet(
-                        msg_type=MsgType.MSG_GET_VAR,
-                        data=VarPayload(var_id=self.variable_ids[var_id], value=None),
-                    )
-                )
 
     def _send_setpoint(self, var_id: str):
         if (
             not self._connected
-            or not self.validated_api
             or self._driver_state != FOCState.FOC_STATE_RUN
             or self._active_mode != self.var_modes.get(var_id)
         ):
@@ -336,14 +283,3 @@ class SetpointDock(QDockWidget):
                                  float(self.value_widgets[var_id].value())),
             )
         )
-
-    def set_var_value(self, var_id: int, value: int | float):
-        name = next((name for name, identifier in self.variable_ids.items() if identifier == var_id), None)
-        if name is None:
-            return
-        widget = self.value_widgets.get(name)
-        if widget is None or widget.hasFocus():
-            return
-        widget.blockSignals(True)
-        widget.setValue(float(value))
-        widget.blockSignals(False)

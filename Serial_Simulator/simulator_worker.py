@@ -14,6 +14,7 @@ import time
 import zlib
 from dataclasses import dataclass
 from USB_debugger.configuration_protocol import pack_value, unpack_value
+from USB_debugger.pid_protocol import pack_gain
 from typing import Callable, Optional
 
 from config import (
@@ -119,6 +120,7 @@ class SimulatorWorker:
         self._saved_variables = dict(self._variables)
         self._configuration = {entry["id"]: entry.get("default", 0) for entry in self.definitions.configuration or []}
         self._saved_configuration = dict(self._configuration)
+        self._saved_pids = dict(self._pids)
         self._encoder_sources = tuple(EncoderSourceInfo(entry["id"], entry["name"], entry["calibratable"])
                                       for entry in fixture.get("encoder_sources", [{"id": 0, "name": "Simulator encoder", "calibratable": True}]))
         self._encoder_source = self._encoder_sources[0].source_id
@@ -325,6 +327,10 @@ class SimulatorWorker:
                 self._invalid_payload(msg_type)
                 return
             controller_id, kp, ki, kd = struct.unpack("<Bfff", payload)
+            descriptor = next((e for e in self.definitions.pids if e["id"] == controller_id), None)
+            if descriptor is not None and not descriptor["states"] & (1 << self._state):
+                self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.INVALID_STATE, "PID gains are not writable in this state.")
+                return
             if (self._state not in (FOCState.FOC_STATE_IDLE, FOCState.FOC_STATE_RUN) or self._cal_upload is not None
                     or self._active_errors or self._latched_errors or any(not math.isfinite(v) or not 0 <= v <= 1000000 for v in (kp, ki, kd))):
                 self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.OUT_OF_RANGE, "PID gains/state/faults prevent this update.")
@@ -333,6 +339,11 @@ class SimulatorWorker:
                 self._error(MsgType.MSG_UNKNOWN_ID, msg_type, CommandErrorCode.UNKNOWN_ID,
                             f"Unknown ID {payload[0]}.")
             else:
+                try:
+                    for value in (kp, ki, kd): pack_gain(descriptor, value)
+                except (ValueError, OverflowError) as exc:
+                    self._error(MsgType.MSG_ERROR, msg_type, CommandErrorCode.OUT_OF_RANGE, str(exc))
+                    return
                 self._pids[controller_id] = (kp, ki, kd)
                 self._anti_flags = 0
                 self._ack(msg_type)
@@ -609,12 +620,14 @@ class SimulatorWorker:
             return
         if state == FOCState.FOC_STATE_FLASH_SAVE:
             self._saved_configuration = dict(self._configuration)
+            self._saved_pids = dict(self._pids)
             self._saved_variables = dict(self._variables)
             self._saved_encoder = (self._encoder_source, self._encoder_flags)
             self._saved_cal_tables = [list(table) for table in self._cal_tables]
             self._saved_anti_flags = self._anti_flags
         elif state == FOCState.FOC_STATE_FLASH_LOAD:
             self._configuration = dict(self._saved_configuration)
+            self._pids = dict(self._saved_pids)
             self._variables = dict(self._saved_variables)
             self._encoder_source, self._encoder_flags = self._saved_encoder
             self._cal_tables = [list(table) for table in self._saved_cal_tables]
@@ -623,6 +636,7 @@ class SimulatorWorker:
             self._saved_configuration = {e["id"]: e.get("default", 0) for e in self.definitions.configuration or []}
             # Clear stored contents; live values change only on LOAD.
             self._saved_variables = dict(self._default_variables)
+            self._saved_pids = {e["id"]: tuple(e.get("default", (0, 0, 0))) for e in self.definitions.pids}
             self._saved_encoder = (self._encoder_sources[0].source_id, 12)
             self._saved_cal_tables = [[0.0] * 128, [0.0] * 2000]
             self._saved_anti_flags = 0
@@ -631,6 +645,7 @@ class SimulatorWorker:
             self._control_mode = None
             self._state = int(FOCState.FOC_STATE_BOOTLOADER)
         self._ack(command)
+
 
     def _setup_configuration(self, name, value=None):
         entry = next(e for e in self.definitions.configuration if e["name"] == name)
@@ -905,8 +920,6 @@ class SimulatorWorker:
         entries = self.definitions.configuration or []
         by_id = {e["id"]: e for e in entries}
         try:
-            if self.info.protocol < 8:
-                raise ValueError("Validated configuration requires protocol 8.")
             if command == MsgType.MSG_GET_CONFIGURATION:
                 if len(payload) != 1:
                     raise ValueError("Expected one configuration group.")
@@ -944,13 +957,13 @@ class SimulatorWorker:
                 for entry in fields:
                     pack_value(entry, candidate[entry["id"]])
                 names = {e["name"]: candidate[e["id"]] for e in entries}
-                if fields[0]["group"] == "Limits" and names["limits.vbus_undervoltage_trip_level"] >= names["limits.vbus_overvoltage_trip_level"]:
+                if fields[0]["group"] == "Limits" and names["limits.vbus_undervoltage_trip_level"] > 0 and names["limits.vbus_overvoltage_trip_level"] > 0 and names["limits.vbus_undervoltage_trip_level"] >= names["limits.vbus_overvoltage_trip_level"]:
                     raise ValueError("Undervoltage trip must be below overvoltage trip.")
-                if fields[0]["group"] == "Limits" and names["limits.max_dq_voltage"] > names["limits.vbus_undervoltage_trip_level"] / math.sqrt(3):
+                if fields[0]["group"] == "Limits" and names["limits.vbus_undervoltage_trip_level"] > 0 and names["limits.max_dq_voltage"] > names["limits.vbus_undervoltage_trip_level"] / math.sqrt(3):
                     raise ValueError("Voltage limit must fit undervoltage trip / sqrt(3).")
                 if fields[0]["group"] in ("Limits", "Encoder"):
                     current = names.get("limits.max_dq_current", math.inf)
-                    if names.get("encoder.calibration_current", 0) > current:
+                    if current > 0 and names.get("encoder.calibration_current", 0) > current:
                         raise ValueError("Calibration D current exceeds the current limit.")
                 if names.get("controller.current_PID_FF_enabled", 0) and fields[0]["group"] == "Controller":
                     if names.get("motor.phase_resistance", 0) <= 0 or names.get("motor.phase_inductance", 0) <= 0:

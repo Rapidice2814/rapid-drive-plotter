@@ -37,7 +37,10 @@ class SetupFlowTests(unittest.TestCase):
         self.owner = Owner(); self.panel = SetupPanel(self.owner)
         self.panel.connected = True; self.panel.supported = True
         self.panel.state = FOCState.FOC_STATE_IDLE; self.panel.faults = 0; self.panel.source_valid = True
-        self.panel.configuration.entries = [{"id": 1}]; self.panel.configuration.values = {1: 0}
+        from test_protocol import fixture, definitions_from
+        entries = definitions_from(fixture()).configuration
+        self.panel.configuration.set_definitions(entries)
+        self.panel.configuration.values = {e["id"]: e["default"] for e in entries}
         self.panel.permissions()
         self.addCleanup(self.panel.deleteLater)
 
@@ -82,6 +85,28 @@ class SetupFlowTests(unittest.TestCase):
             self.assertFalse(self.panel.running)
             self.assertEqual(self.requests()[-1].data.state, FOCState.FOC_STATE_STOP)
             self.assertFalse(any(p.data.state == FOCState.FOC_STATE_ALIGNMENT for p in self.requests()))
+
+    def test_automatic_current_calibration_waits_for_original_step_sequence(self):
+        self.begin([0, 1])
+        self.status(40, FOCState.FOC_STATE_PID_AUTOTUNE, 1)
+        self.status(40, FOCState.FOC_STATE_PID_AUTOTUNE, 1,
+                    FOCState.FOC_STATE_CURRENT_SENSOR_CALIBRATION)
+        self.assertTrue(self.panel.running)
+        self.assertEqual(len(self.requests()), 1)
+        self.status(41, FOCState.FOC_STATE_MOTOR_PROBE, 0, FOCState.FOC_STATE_MOTOR_PROBE)
+        self.assertTrue(self.panel.running)
+        self.assertEqual(len(self.requests()), 1)
+        self.status(41, FOCState.FOC_STATE_MOTOR_PROBE, 1)
+        self.assertEqual(self.requests()[-1].data.state, FOCState.FOC_STATE_ALIGNMENT)
+
+    def test_automatic_current_calibration_failure_aborts_without_starting_next_step(self):
+        self.begin([0, 1])
+        self.status(40, FOCState.FOC_STATE_PID_AUTOTUNE, 1)
+        self.status(40, FOCState.FOC_STATE_PID_AUTOTUNE, 2,
+                    FOCState.FOC_STATE_ERROR, active=16)
+        self.assertFalse(self.panel.running)
+        self.assertEqual(self.requests()[-1].data.state, FOCState.FOC_STATE_STOP)
+        self.assertFalse(any(p.data.state == FOCState.FOC_STATE_ALIGNMENT for p in self.requests()))
 
     def test_skipped_steps_and_opt_in_anticogging(self):
         self.begin([4,5])

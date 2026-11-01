@@ -157,12 +157,16 @@ class FirmwareFaultContractTests(unittest.TestCase):
         self.assertEqual(FOCError.FOC_ERROR_OPERATION_FAILED, 0x8000)
 
     def test_operation_failures_latch_instead_of_entering_unexplained_error(self):
-        for filename, count in (("FOC_States_Calibration.c", 7), ("FOC_States_Storage.c", 4)):
+        for filename in ("FOC_States_Calibration.c", "FOC_States_Storage.c"):
             source = (self.firmware / "Foc/FOC_States" / filename).read_text()
             # Some routines preserve a specific fault (e.g. phase over-current)
-            # instead of replacing its cause with OPERATION_FAILED.
-            self.assertEqual(source.count("FOC_SetError(hfoc,"), count)
-            self.assertNotIn("FOC_SetState(hfoc, FOC_STATE_ERROR", source)
+            # instead of replacing its cause with OPERATION_FAILED. Check each
+            # state handler, allowing additional guarded failure paths.
+            handlers = re.findall(r"^void (FOC_State\w+)\([^)]*\)\{(.*?)^\}", source, re.M | re.S)
+            self.assertTrue(handlers, filename)
+            for name, body in handlers:
+                self.assertRegex(body, r"\bFOC_SetError\(\s*\w+\s*,", name)
+                self.assertNotRegex(body, r"\bFOC_SetState\(\s*\w+\s*,\s*FOC_STATE_ERROR\b", name)
 
     def test_flash_critical_sections_have_one_cleanup_exit(self):
         source = (self.firmware / "Foc/FOC_Drivers/FOC_Flash.c").read_text()

@@ -1,5 +1,6 @@
 """Calibration progress and explicitly downloaded, editable compensation tables."""
 from ui.setup_panel import SetupPanel
+from ui.number_format import decimal_text
 
 import math
 import time
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, Q
                                QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget, QAbstractItemView, QHeaderView)
 from calibration_protocol import CalibrationInfo, CalibrationTable, CHUNK, ERROR_NAMES, STAGES
-from protocol_codec import Packet, StatePayload, VarPayload, PIDPayload
+from protocol_codec import Packet, StatePayload, PIDPayload
 from protocol_definitions import MsgType, FOCState
 from configuration_protocol import decode_configuration, encode_configuration
 
@@ -104,7 +105,7 @@ class TableEditor(QWidget):
         self.table.setRowCount(bins)
         for row in range(bins):
             for column, value in enumerate([str(row), f"{row * math.tau / bins:.5f}"] +
-                                           [f"{values[row * channels + c]:.8g}" for c in range(channels)]):
+                                           [decimal_text(values[row * channels + c], 8) for c in range(channels)]):
                 item = QTableWidgetItem(value)
                 if column < 2:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -124,7 +125,7 @@ class TableEditor(QWidget):
             self.radial_span *= 2
         for label, fraction in zip(self.grid_labels, (-1, 0, 1)):
             value = fraction * self.radial_span
-            label.setText(f"{value:+.3g} rad" if self.kind == 0 else f"{value:+.3g} A")
+            label.setText(f"{decimal_text(value, 3, signed=True)} rad" if self.kind == 0 else f"{decimal_text(value, 3, signed=True)} A")
         for c, curve in enumerate(self.curves):
             points = [self._radial_point(i, self.values[i * channels + c]) for i in range(bins)]
             if points:
@@ -137,13 +138,13 @@ class TableEditor(QWidget):
             rms = math.sqrt(sum(v * v for v in self.values) / len(self.values))
             peak = max(abs(v) for v in self.values)
             unit = "rad" if self.kind == 0 else "A"
-            text = f"{'Unsaved local edits. ' if self.dirty else ''}RMS {rms:.6g} {unit}; peak |value| {peak:.6g} {unit}."
-            span = f"{self.radial_span:.3g} rad" if self.kind == 0 else f"{self.radial_span:g} A"
+            text = f"{'Unsaved local edits. ' if self.dirty else ''}RMS {decimal_text(rms, 6)} {unit}; peak |value| {decimal_text(peak, 6)} {unit}."
+            span = f"{decimal_text(self.radial_span, 3)} rad" if self.kind == 0 else f"{decimal_text(self.radial_span, 6)} A"
             text += f" Radial range ±{span} ({'auto-expanded' if self.radial_span > self.default_span else 'default scale'})."
             if self.kind == 1:
                 differences = [self.values[i] - self.values[i + 1] for i in range(0, len(self.values), 2)]
                 disagreement = math.sqrt(sum(d*d for d in differences) / len(differences))
-                text += f" Forward/reverse difference RMS {disagreement:.5g} A; peak {max(abs(d) for d in differences):.5g} A."
+                text += f" Forward/reverse difference RMS {decimal_text(disagreement, 5)} A; peak {decimal_text(max(abs(d) for d in differences), 5)} A."
             self.summary.setText(text)
 
     def select_point(self, row: int, channel: int):
@@ -170,7 +171,7 @@ class TableEditor(QWidget):
             struct.pack("<f", value)
         except (ValueError, OverflowError):
             self._updating = True
-            item.setText(f"{self.values[index]:.8g}")
+            item.setText(decimal_text(self.values[index], 8))
             self._updating = False
             return
         self.values[index] = value
@@ -202,7 +203,7 @@ class TableEditor(QWidget):
             value = -value
         item = self.table.item(row, channel + 2)
         if item is not None:
-            item.setText(f"{value:.8g}")
+            item.setText(decimal_text(value, 8))
         self._position_handle()
 
 
@@ -240,7 +241,6 @@ class CalibrationDock(QDockWidget):
         self.await_setup_state = False
         self.active_errors: int | None = None
         self.latched_errors: int | None = None
-        self.result_variables: dict[int, tuple[QLabel, str]] = {}
         self.result_configurations: dict[int, tuple[QLabel, str]] = {}
         self.configuration_entries = []
         self.result_pids: dict[int, QLabel] = {}
@@ -428,33 +428,33 @@ class CalibrationDock(QDockWidget):
         layout.addStretch()
         self.tabs.addTab(page, "Motor setup")
 
-    def set_definitions(self, variables, pids, configuration=None):
+    def set_definitions(self, pids, configuration):
         """Resolve optional readbacks by discovered names, never fixed numeric IDs."""
-        self.result_variables.clear()
         self.result_configurations.clear()
         self.configuration_entries = list(configuration or [])
         self.calibration_current_entry = next((e for e in self.configuration_entries if e["name"] == "encoder.calibration_current"), None)
         if self.calibration_current_entry is not None:
             self.calibration_current.setRange(float(self.calibration_current_entry["minimum"]), float(self.calibration_current_entry["maximum"]))
         self.result_pids.clear()
-        variables_by_name = {entry["name"]: entry["id"] for entry in variables}
         configuration_by_name = {entry["name"]: entry["id"] for entry in self.configuration_entries}
         pids_by_name = {entry["name"]: entry["id"] for entry in pids}
         self.anticog_pid_id = pids_by_name.get("pid_anticogging")
+        descriptor = next((e for e in pids if e["name"] == "pid_anticogging"), None)
+        if descriptor is not None:
+            for field in self.anticog_gain_inputs:
+                field.setRange(float(descriptor["minimum"]), float(descriptor["maximum"]))
         for name, title, unit in self.RESULT_VARIABLES:
             label = self.variable_labels[name]
             key = name.removeprefix("flash_data.")
-            label.setText(f"{title}: {'Not read' if key in configuration_by_name or name in variables_by_name else 'Not exposed by this firmware'}")
+            label.setText(f"{title}: {'Not read' if key in configuration_by_name else 'Not exposed by this firmware'}")
             if key in configuration_by_name:
                 self.result_configurations[configuration_by_name[key]] = (label, unit)
-            elif name in variables_by_name:
-                self.result_variables[variables_by_name[name]] = (label, unit)
         for name, label in self.pid_labels.items():
             axis = "d" if name == "pid_current_d" else "q"
             label.setText(f"{axis}-axis current PI: {'Not read' if name in pids_by_name else 'Not exposed by this firmware'}")
             if name in pids_by_name:
                 self.result_pids[pids_by_name[name]] = label
-        self.setup_page.set_definitions(self.configuration_entries)
+        self.setup_page.set_definitions(self.configuration_entries, pids)
         self._permissions()
 
     def read_calibration_current(self):
@@ -483,20 +483,12 @@ class CalibrationDock(QDockWidget):
         """Read existing settings; these values alone do not prove a routine succeeded."""
         if not self.read_setup.isEnabled():
             return
-        for identifier in self.result_variables:
-            self._send(Packet(MsgType.MSG_GET_VAR, VarPayload(identifier, None)))
         groups = {entry["group_id"] for entry in self.configuration_entries if entry["id"] in self.result_configurations}
         for group in sorted(groups):
             self._send(Packet(MsgType.MSG_GET_CONFIGURATION, bytes((group,))))
         for identifier in self.result_pids:
             self._send(Packet(MsgType.MSG_GET_PID, PIDPayload(identifier, None, None, None)))
 
-    def on_setup_variable(self, payload: VarPayload):
-        target = self.result_variables.get(payload.var_id)
-        if target is not None and payload.value is not None:
-            label, unit = target
-            title = label.text().split(":", 1)[0]
-            label.setText(f"{title}: {payload.value:.6g}{unit}")
 
     def on_setup_pid(self, payload: PIDPayload):
         self.setup_page.on_pid(payload)
@@ -507,7 +499,7 @@ class CalibrationDock(QDockWidget):
         label = self.result_pids.get(payload.controller_id)
         if label is not None and payload.kp is not None and payload.ki is not None and payload.kd is not None:
             title = label.text().split(":", 1)[0]
-            label.setText(f"{title}: Kp {payload.kp:.6g}, Ki {payload.ki:.6g}, Kd {payload.kd:.6g}")
+            label.setText(f"{title}: Kp {decimal_text(payload.kp, 6)}, Ki {decimal_text(payload.ki, 6)}, Kd {decimal_text(payload.kd, 6)}")
 
     def on_setup_configuration(self, payload: bytes):
         """Update motor readbacks without depending on the debug-variable list."""
@@ -521,7 +513,7 @@ class CalibrationDock(QDockWidget):
             target = self.result_configurations.get(identifier)
             if target is not None:
                 label, unit = target
-                label.setText(f"{label.text().split(':', 1)[0]}: {value:.6g}{unit}")
+                label.setText(f"{label.text().split(':', 1)[0]}: {decimal_text(value, 6)}{unit}")
 
     def set_errors(self, *, active: int | None = None, latched: int | None = None):
         if active is not None:
@@ -560,12 +552,15 @@ class CalibrationDock(QDockWidget):
         if self.connected:
             self._send(Packet(MsgType.MSG_SET_STATE, StatePayload(int(FOCState.FOC_STATE_STOP))), self._after_setting)
 
-    def _send(self, packet, callback=None):
+    def _send(self, packet, callback=None, received=None):
         generation = self.generation
         def done(success):
             self.completed.emit((generation, callback, success))
         try:
-            self.send(packet, completed=done)
+            if received is None:
+                self.send(packet, completed=done)
+            else:
+                self.send(packet, completed=done, received=received)
         except (ValueError, TypeError, RuntimeError) as exc:
             self.transfer_status.setText(f"Command could not be sent: {exc}")
             done(False)
@@ -700,7 +695,7 @@ class CalibrationDock(QDockWidget):
                          setup_reason, next(item[2] for item in self.SETUP_ROUTINES if item[0] == state))
         availability(self.setup_stop, self.connected, "Not connected. Connect to the driver first.",
                      "Cancel the active routine and request STOP. This is not a hardware emergency stop.")
-        availability(self.read_setup, safe and not uploading and bool(self.result_variables or self.result_configurations or self.result_pids),
+        availability(self.read_setup, safe and not uploading and bool(self.result_configurations or self.result_pids),
                      blocked or "No supported motor parameters or current controllers are exposed by this firmware.",
                      "Read existing RAM parameters and current gains, using the connected driver's definitions.")
 
@@ -908,5 +903,5 @@ class CalibrationDock(QDockWidget):
             return
         if QMessageBox.question(self, "Save settings", "Write all current settings and tables to flash? "
                                 "Motor output remains stopped; flash programming can pause telemetry.") == QMessageBox.StandardButton.Yes:
-            # SET_STATE has no RUN continuation, unlike the legacy FLASH_SAVE command.
+            # Save settings without requesting a RUN continuation.
             self._send(Packet(MsgType.MSG_SET_STATE, StatePayload(int(FOCState.FOC_STATE_FLASH_SAVE))), self._after_setting)

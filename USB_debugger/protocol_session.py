@@ -51,6 +51,7 @@ class ProtocolSession:
         self.lock = threading.RLock()
         self.commands = deque()
         self.completions = {}
+        self.receivers = {}
         self.pending = None
         self.active = False
         self.initializing = False
@@ -81,6 +82,7 @@ class ProtocolSession:
             self.pending = None
             callbacks = list(self.completions.values())
             self.completions.clear()
+            self.receivers.clear()
             self.requested_mask = None
             self.info = self.definitions = self.firmware_version = None
             self.phase = "disconnected"
@@ -88,16 +90,16 @@ class ProtocolSession:
             for callback in callbacks:
                 callback(False)
 
-    def send(self, packet, completed=None):
+    def send(self, packet, completed=None, received=None):
         with self.lock:
             if not self.active or self.initializing:
                 if completed is not None:
                     completed(False)
                 return
-            self._enqueue(packet, completed)
+            self._enqueue(packet, completed, received)
             self._pump()
 
-    def _enqueue(self, packet, completed=None):
+    def _enqueue(self, packet, completed=None, received=None):
         raw = self.codec.encode_packet(packet)
         if self.info is not None and len(raw.payload_bytes) > self.info.max_command:
             raise ValueError("Command exceeds the device's advertised payload limit")
@@ -109,9 +111,12 @@ class ProtocolSession:
             confirmation = raw
         if completed is not None:
             self.completions[id(confirmation)] = completed
+        if received is not None:
+            self.receivers[id(confirmation)] = received
 
     def _complete_pending(self, success):
         """Notify the request owner exactly once, including read-back completion."""
+        self.receivers.pop(id(self.pending), None)
         callback = self.completions.pop(id(self.pending), None)
         self.pending = None
         if callback is not None:
@@ -119,7 +124,9 @@ class ProtocolSession:
 
     def _cancel_queued(self):
         while self.commands:
-            callback = self.completions.pop(id(self.commands.popleft()), None)
+            identifier = id(self.commands.popleft())
+            self.receivers.pop(identifier, None)
+            callback = self.completions.pop(identifier, None)
             if callback is not None:
                 callback(False)
 
@@ -295,6 +302,9 @@ class ProtocolSession:
                     self.requested_mask = self.pending.payload_bytes
                 if command in (MsgType.MSG_START_LOG, MsgType.MSG_STOP_LOG):
                     self.logging_changed(command == MsgType.MSG_START_LOG)
+                receiver = self.receivers.pop(id(self.pending), None)
+                if receiver is not None:
+                    receiver(raw)
                 self._complete_pending(True)
                 if self.initializing and command == MsgType.MSG_START_LOG:
                     self.initializing = False

@@ -22,6 +22,7 @@ from protocol_definitions import MsgType
 from serial_worker import SerialConfig, SerialWorker
 from hdf5_logger import HDF5LogLogger, get_log_filename
 from plot_window import PlotWindow
+from bootloader_recovery import request_bootloader
 
 from config import (
     SERIAL_BAUDRATE,
@@ -168,7 +169,11 @@ def main():
         if join and threading.current_thread() is not worker.thread:
             worker.join()
 
+    recovery_thread = None
+
     def start_connection(endpoint: str):
+        if recovery_thread is not None and recovery_thread.is_alive():
+            raise RuntimeError("Wait for the bootloader request to finish first.")
         stop_worker(join=True)
         if active_logger is not None:
             set_logging_enabled(False)
@@ -219,6 +224,26 @@ def main():
         plot.set_worker(worker)
         worker.start()
 
+    def start_bootloader_recovery(endpoint, completed):
+        nonlocal recovery_thread
+        if recovery_thread is not None and recovery_thread.is_alive():
+            raise RuntimeError("A bootloader request is already in progress.")
+        stop_worker(join=True)
+        plot.connect_dock.save_log_checkbox.setChecked(False)
+        set_logging_enabled(False)
+        while not failures.empty(): failures.get_nowait()
+        while not command_rejections.empty(): command_rejections.get_nowait()
+        def run():
+            try:
+                message = request_bootloader(endpoint)
+            except (OSError, ValueError, RuntimeError) as exc:
+                completed(False, str(exc))
+            else:
+                completed(True, message)
+        recovery_thread = threading.Thread(target=run, name="BootloaderRecovery", daemon=True)
+        recovery_thread.start()
+
+    plot.connect_dock.set_bootloader_callback(start_bootloader_recovery)
     plot.set_start_connection_callback(start_connection)
     if hasattr(plot, "connect_dock"):
         plot.connect_dock.on_disconnect = lambda: stop_worker(join=True)

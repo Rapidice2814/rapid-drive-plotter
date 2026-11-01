@@ -32,7 +32,7 @@ def pack_value(entry, value):
     lo, hi = float(entry["minimum"]), float(entry["maximum"])
     if entry["type"] == "f":
         number, lo, hi = (struct.unpack("<f", struct.pack("<f", v))[0] for v in (number, lo, hi))
-    if not math.isfinite(number) or not lo <= number <= hi:
+    if not math.isfinite(number) or not (number == 0 or lo <= number <= hi):
         raise ValueError(f"{entry['label']} is outside the advertised range")
     if entry["type"] != "f" and number != int(number):
         raise ValueError("Integer configuration value required")

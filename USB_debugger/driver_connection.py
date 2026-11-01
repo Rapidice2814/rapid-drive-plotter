@@ -49,12 +49,12 @@ class DriverConnection:
     def start(self):
         self.worker.start()
 
-    def send(self, packet, completed=None):
+    def send(self, packet, completed=None, received=None):
         if self.closed or self._disconnected.is_set():
             if completed is not None:
                 completed(False)
             return
-        self.session.send(packet, completed=completed)
+        self.session.send(packet, completed=completed, received=received)
 
     def tick(self):
         if not self.closed and not self._disconnected.is_set():

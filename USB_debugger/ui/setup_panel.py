@@ -71,7 +71,7 @@ class SetupPanel(QWidget):
         gain_row = QHBoxLayout()
         gain_row.addWidget(QLabel("Optional anti-cogging PID"))
         self.anti_gains = []
-        for name, value in (("Kp",10), ("Ki",20), ("Kd",0.2)):
+        for name, value in (("Kp",0), ("Ki",0), ("Kd",0)):
             gain_row.addWidget(QLabel(name))
             field = QDoubleSpinBox(); field.setDecimals(6); field.setRange(0,10000); field.setValue(value)
             field.valueChanged.connect(lambda _: setattr(self, "gains_dirty", True))
@@ -82,7 +82,7 @@ class SetupPanel(QWidget):
         self.apply_gains.clicked.connect(self._apply_gains)
         gain_row.addWidget(self.read_gains); gain_row.addWidget(self.apply_gains)
         manual_layout.addLayout(gain_row)
-        self.configuration = ConfigurationDock(lambda packet, completed=None: owner._send(packet, completed), self)
+        self.configuration = ConfigurationDock(lambda packet, completed=None, received=None: owner._send(packet, completed, received=received), self)
         self.configuration.setTitleBarWidget(QWidget())
         self.configuration.setMinimumHeight(240); self.configuration.setMaximumHeight(390)
         manual_layout.addWidget(self.configuration)
@@ -122,8 +122,12 @@ class SetupPanel(QWidget):
         self.timer = QTimer(self); self.timer.setInterval(500); self.timer.timeout.connect(self.poll)
         self.permissions()
 
-    def set_definitions(self, entries):
-        self.configuration.set_definitions(entries)
+    def set_definitions(self, entries, pids=None):
+        self.configuration.set_definitions(entries, pids)
+        descriptor = next((e for e in pids or [] if e["name"] == "pid_anticogging"), None)
+        if descriptor is not None:
+            for field in self.anti_gains:
+                field.setRange(float(descriptor["minimum"]), float(descriptor["maximum"]))
         if self.connected:
             self.configuration.set_connected(True)
             self.configuration.set_state(self.state)
@@ -213,7 +217,8 @@ class SetupPanel(QWidget):
         if not self.run_all.isEnabled() or self.running: return
         if not indexes:
             self.status.setText("Select at least one step."); return
-        if self.voltage_dirty or self.configuration.dirty or self.configuration.pending or (5 in indexes and self.gains_dirty):
+        if (self.voltage_dirty or self.configuration.busy or self.configuration.has_unapplied_changes()
+                or (5 in indexes and self.gains_dirty)):
             self.status.setText("Apply or discard manual setting edits and wait for readback before starting."); return
         if not self.configuration.entries or any(e["id"] not in self.configuration.values for e in self.configuration.entries):
             self.status.setText("Read the manual configuration groups before starting."); return
@@ -269,8 +274,7 @@ class SetupPanel(QWidget):
                         self.results[self.current].setText("Completed")
                         self.baseline = result.sequence
                         self.owner.read_setup_values()
-                        for group in {e["group_id"] for e in self.configuration.entries if e.get("group") in ("Motor", "Controller")}:
-                            self.configuration.read(group)
+                        self.configuration.read_from_driver(confirm=False)
                         self.start_next()
                     elif result.state == FOCState.FOC_STATE_STOP:
                         self.results[self.current].setText("Completed; waiting for IDLE")
@@ -283,7 +287,7 @@ class SetupPanel(QWidget):
         if not self.todo:
             self.running = False; self.current = None; self.phase = "idle"
             self.status.setText("Selected setup steps completed. Review results and save settings as needed.")
-            for group in self.configuration.read_buttons: self.configuration.read(group)
+            self.configuration.read_from_driver(confirm=False)
             self.permissions(); return
         self.current = self.todo.pop(0)
         name, state, kind = self.STEPS[self.current]

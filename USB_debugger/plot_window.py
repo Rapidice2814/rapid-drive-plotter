@@ -44,10 +44,10 @@ from calibration_protocol import CalibrationInfo, CalibrationTable
 
 
 class CommandSender(Protocol):
-    def __call__(self, packet: Packet, *, completed: Callable[[bool], None] | None = None) -> None: ...
+    def __call__(self, packet: Packet, *, completed: Callable[[bool], None] | None = None, received=None) -> None: ...
 
 
-def _discard_command(packet: Packet, *, completed: Callable[[bool], None] | None = None) -> None:
+def _discard_command(packet: Packet, *, completed: Callable[[bool], None] | None = None, received=None) -> None:
     if completed is not None:
         completed(False)
 
@@ -90,7 +90,7 @@ class PlotWindow(QMainWindow):
         if supports_completion:
             self._command_sender = sender
         else:
-            def send_without_completion(packet: Packet, *, completed: Callable[[bool], None] | None = None) -> None:
+            def send_without_completion(packet: Packet, *, completed: Callable[[bool], None] | None = None, received=None) -> None:
                 sender(packet)
             self._command_sender = send_without_completion
         self._supports_completion = supports_completion
@@ -135,8 +135,6 @@ class PlotWindow(QMainWindow):
     def _refresh_command_targets(self):
         if hasattr(self, "signal_dock"):
             self.signal_dock.on_command = self.on_command
-        if hasattr(self, "pid_dock"):
-            self.pid_dock.on_command = self.on_command
         if hasattr(self, "control_dock"):
             self.control_dock.on_command = self.on_command
         if hasattr(self, "var_dock"):
@@ -177,7 +175,8 @@ class PlotWindow(QMainWindow):
         self.signal_dock = SignalSelectorDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.signal_dock)
 
-        self.pid_dock = PidDock(self.on_command, self)
+        self.pid_dock = PidDock(
+            lambda packet, completed=None, received=None: self._command_sender(packet, completed=completed, received=received), self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pid_dock)
 
         self.control_dock = ControlDock(
@@ -193,7 +192,7 @@ class PlotWindow(QMainWindow):
         self.basics_dock = BasicsDock(self.on_command, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.basics_dock)
         self.calibration_dock = CalibrationDock(self.basics_dock,
-            lambda packet, completed=None: self._command_sender(packet, completed=completed), self)
+            lambda packet, completed=None, received=None: self._command_sender(packet, completed=completed, received=received), self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.calibration_dock)
         self.setup_dock = QDockWidget("Setup", self)
         setup_page = self.calibration_dock.setup_page
@@ -205,7 +204,7 @@ class PlotWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.setup_dock)
 
         self.configuration_dock = ConfigurationDock(
-            lambda packet, completed=None: self._command_sender(packet, completed=completed), self)
+            lambda packet, completed=None, received=None: self._command_sender(packet, completed=completed, received=received), self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.configuration_dock)
 
         self.setpoint_dock = SetpointDock(self.on_command, self)
@@ -359,29 +358,21 @@ class PlotWindow(QMainWindow):
         self.signal_dock.set_definitions(definitions, info, mask)
         self.pid_dock.set_definitions(definitions.pids)
         self.var_dock.set_definitions(definitions.variables)
-        self.setpoint_dock.set_definitions(definitions.variables)
-        self.setpoint_dock.set_validated_api(info.protocol >= 8)
         self.var_dock.set_debug_writes(info.debug_writes)
-        self.configuration_dock.set_definitions(definitions.configuration)
+        self.configuration_dock.set_definitions(definitions.configuration, definitions.pids)
         self.can_dock.set_definitions(definitions.can_cyclic, info.sample_rate)
-        self.calibration_dock.set_definitions(definitions.variables, definitions.pids, definitions.configuration)
-        self.basics_dock.validated_targets = info.protocol >= 8
-        self.basics_dock.variable_ids = {entry["name"]: entry["id"] for entry in definitions.variables}
+        self.calibration_dock.set_definitions(definitions.pids, definitions.configuration)
         self.basics_dock.set_version(*info.firmware)
 
     def _clear_definitions(self):
         self.configuration_dock.set_connected(False)
         self.configuration_dock.set_definitions(None)
-        self.setpoint_dock.set_validated_api(False)
         self.var_dock.set_debug_writes(False)
         self.signal_dock.clear_definitions()
         self.pid_dock.set_definitions([])
         self.var_dock.set_definitions([])
-        self.setpoint_dock.set_definitions([])
         self.can_dock.clear_definitions()
         self.calibration_dock.set_definitions([], [])
-        self.basics_dock.variable_ids = {}
-        self.basics_dock.validated_targets = False
 
     @Slot(bool)
     def _on_basics_visibility_changed(self, visible: bool) -> None:
@@ -436,9 +427,7 @@ class PlotWindow(QMainWindow):
 
 
         elif packet.msg_type == MsgType.MSG_CONFIGURATION_REPLY and isinstance(packet.data, bytes):
-            self.configuration_dock.on_reply(packet.data)
             self.calibration_dock.on_setup_configuration(packet.data)
-            self.calibration_dock.setup_page.configuration.on_reply(packet.data)
 
         elif packet.msg_type == MsgType.MSG_TARGETS_REPLY and isinstance(packet.data, bytes):
             self.setpoint_dock.set_target_values(packet.data)
@@ -493,19 +482,10 @@ class PlotWindow(QMainWindow):
 
         elif packet.msg_type == MsgType.MSG_PID_REPLY and isinstance(packet.data, PIDPayload):
             self.calibration_dock.on_setup_pid(packet.data)
-            if packet.data.kp is not None and packet.data.ki is not None and packet.data.kd is not None:
-                self.pid_dock.set_pid_values(
-                    packet.data.controller_id,
-                    packet.data.kp,
-                    packet.data.ki,
-                    packet.data.kd,
-                )
 
         elif packet.msg_type == MsgType.MSG_VAR_REPLY and isinstance(packet.data, VarPayload):
-            self.calibration_dock.on_setup_variable(packet.data)
             if packet.data.value is not None:
                 self.var_dock.set_var_value(packet.data.var_id, packet.data.value)
-                self.setpoint_dock.set_var_value(packet.data.var_id, packet.data.value)
 
         elif isinstance(packet.data, CommandErrorPayload):
             # The session callback displays the command-specific explanation.

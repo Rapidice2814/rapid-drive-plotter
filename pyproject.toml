@@ -21,6 +21,9 @@ include = ["USB_debugger*", "Serial_Simulator*"]
 [tool.setuptools.package-data]
 Serial_Simulator = ["definitions.json"]
 
+[tool.setuptools.data-files]
+"share/rapid-drive-plotter/motor-presets" = ["motor-presets/*.json"]
+
 [project.optional-dependencies]
 dev = ["pyright==1.1.414"]
 

@@ -1,4 +1,4 @@
-"""CAN catalogs are device metadata, including across driver updates and legacy sessions."""
+"""CAN catalogs are device metadata, including across driver catalog changes."""
 from dataclasses import replace
 from pathlib import Path
 import struct
@@ -9,16 +9,7 @@ from test_protocol import Harness, fixture, definitions_from
 from test_dynamic_ui import HAS_GUI
 from device_definitions import DeviceInfo, Definitions, DefinitionCache, PAGE_HEADER, parse_rows
 from protocol_codec import Packet, RawPacket, CanCyclicTypePayload, CanCyclicRatePayload, ProtocolCodec
-from protocol_definitions import MsgType
-
-
-def legacy_driver(harness):
-    driver = harness.simulator
-    definitions = Definitions(driver.definitions.signals, driver.definitions.variables, driver.definitions.pids)
-    driver.definitions = definitions
-    driver.info = replace(driver.info, protocol=6, counts=driver.info.counts[:3], fingerprint=definitions.fingerprint())
-    driver.codec.set_definitions(definitions, driver.info)
-    return definitions
+from protocol_definitions import MsgType, PROTOCOL_VERSION
 
 
 class CanDiscoveryTests(unittest.TestCase):
@@ -37,11 +28,11 @@ class CanDiscoveryTests(unittest.TestCase):
         data["can_cyclic"] = [{"name": f"Additional cyclic message {i:03d}"} for i in range(70)]
         data["signals"].append({"name": "custom.extra_signal", "type": "u32"})
         data["variables"].append({"name": "custom.extra_variable", "type": "f"})
-        data["pids"].append({"name": "custom.extra_pid"})
+        data["pids"].append(dict(data["pids"][0], name="custom.extra_pid"))
         h = Harness(self.directory, data)
         h.start(["tick"])
         self.assertFalse(h.errors)
-        self.assertEqual(h.session.info.counts, (32, 1, len(data["pids"]), 70, 15))
+        self.assertEqual(h.session.info.counts, (32, 1, len(data["pids"]), 70, len(data["configuration"])))
         self.assertEqual(h.session.definitions.can_cyclic[69], {"id": 69, "name": "Additional cyclic message 069"})
         requests = [h.codec.extract_packets(bytearray(frame))[0] for frame in h.sent]
         pages = [r for r in requests if r.msg_type_int == MsgType.MSG_GET_DEFINITIONS]
@@ -72,30 +63,6 @@ class CanDiscoveryTests(unittest.TestCase):
         self.assertNotIn(MsgType.MSG_GET_DEFINITIONS, [frame[2] for frame in restarted.sent])
         self.assertEqual(restarted.codec.can_cyclic_list, newer.codec.can_cyclic_list)
 
-    def test_legacy_v6_discovery_cache_and_v7_reconnect_do_not_mix_ids(self):
-        h = Harness(self.directory)
-        legacy = legacy_driver(h)
-        h.start(["tick"])
-        self.assertFalse(h.errors)
-        self.assertEqual(h.session.info.protocol, 6)
-        self.assertIsNone(h.session.definitions.can_cyclic)
-        self.assertEqual(h.codec.can_cyclic_list, [])
-        self.assertEqual(DeviceInfo.decode(h.session.info.encode()), h.session.info)
-        self.assertEqual(len(h.session.info.encode()), 29)
-        self.assertEqual(DefinitionCache(self.directory).load(h.session.info).fingerprint(), legacy.fingerprint())
-        with self.assertRaises(ValueError):
-            h.codec.encode_packet(Packet(MsgType.MSG_GET_CAN_CYCLIC_RATE, CanCyclicTypePayload(0)))
-        cached = Harness(self.directory)
-        legacy_driver(cached)
-        cached.start()
-        self.assertTrue(cached.session.cache_hit)
-        updated = Harness(self.directory)
-        updated.start()
-        self.assertFalse(updated.session.cache_hit)
-        self.assertEqual(len(updated.session.info.encode()), 34)
-        self.assertEqual(len(updated.codec.can_cyclic_list), 9)
-        updated.session.stop()
-        self.assertEqual(updated.codec.can_cyclic_list, [])
 
     def test_can_names_ids_and_order_are_validated_and_fingerprinted(self):
         original = definitions_from(fixture())
@@ -168,7 +135,7 @@ class CanDiscoveryUITests(unittest.TestCase):
 
     def populate(self, data):
         definitions = definitions_from(data)
-        info = DeviceInfo(7, (1, 0, 0), tuple(map(len, definitions.lists())), 5, 8, 12345, 123, 1019, definitions.fingerprint())
+        info = DeviceInfo(PROTOCOL_VERSION, (1, 0, 0), tuple(map(len, definitions.lists())), 5, 8, 12345, 123, 1019, definitions.fingerprint())
         self.window._handle_definitions((definitions, info, definitions.mask_for_names(["tick"], 8), self.worker))
         self.window._handle_transport_ready(12345)
         self.sent.clear()
@@ -195,17 +162,3 @@ class CanDiscoveryUITests(unittest.TestCase):
         self.populate(data)
         self.assertEqual(set(dock.cyclic_rate_widgets), {0})
         self.assertEqual(dock.rates_form.rowCount(), 3)
-
-    def test_legacy_driver_has_no_guessed_catalog_but_node_controls_work(self):
-        definitions = definitions_from(fixture())
-        legacy = Definitions(definitions.signals, definitions.variables, definitions.pids)
-        info = DeviceInfo(6, (0, 3, 0), tuple(map(len, legacy.lists())), 5, 8, 8000, 123, 1019, legacy.fingerprint())
-        self.window._handle_definitions((legacy, info, legacy.mask_for_names(["tick"], 8), self.worker))
-        self.window._handle_transport_ready(8000)
-        dock = self.window.can_dock
-        self.assertEqual(dock.cyclic_rate_widgets, {})
-        self.assertIn("does not advertise", dock.discovery_label.text())
-        self.assertTrue(dock.read_node_id_button.isEnabled())
-        self.sent.clear()
-        dock.request_all()
-        self.assertEqual([p.msg_type for p in self.sent], [MsgType.MSG_GET_NODE_ID])

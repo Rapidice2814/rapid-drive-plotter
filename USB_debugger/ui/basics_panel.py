@@ -22,7 +22,7 @@ from config import (
     VERSION_POLL_INTERVAL_SECONDS,
     VERSION_REPLY_TIMEOUT_SECONDS,
 )
-from protocol_codec import (ControlModePayload, Packet, StatePayload, VarPayload,
+from protocol_codec import (ControlModePayload, Packet, StatePayload,
                             EncoderInfoPayload, EncoderSourcePayload, EncoderCorrectionPayload)
 from protocol_definitions import CONTROL_MODE_LABELS, FOC_ERROR_LABELS, ControlMode, FOCState, MsgType
 
@@ -33,8 +33,6 @@ class BasicsDock(QDockWidget):
     def __init__(self, on_command, parent=None):
         super().__init__("Basics", parent)
         self.on_command = on_command
-        self.variable_ids = {}
-        self.validated_targets = False
         self._connected = False
         self._current_state: FOCState | None = None
         self._current_control_mode: ControlMode | None = None
@@ -436,26 +434,7 @@ class BasicsDock(QDockWidget):
             )
         )
         self.request_control_mode()
-        if self.validated_targets:
-            self._send(MsgType.MSG_GET_TARGETS)
-            return
-        # Switching modes can reset the mode's setpoint. Refresh the matching
-        # target fields so the Setpoints tab immediately reflects the driver.
-        mode_variable_names = {
-            ControlMode.CONTROL_MODE_OPENLOOP: ("dq_current_setpoint.d", "dq_current_setpoint.q"),
-            ControlMode.CONTROL_MODE_POSITION: ("angle_setpoint",),
-            ControlMode.CONTROL_MODE_SPEED: ("speed_setpoint",),
-        }
-        for name in mode_variable_names[mode]:
-            if name not in self.variable_ids:
-                continue
-            var_id = self.variable_ids[name]
-            self.on_command(
-                Packet(
-                    msg_type=MsgType.MSG_GET_VAR,
-                    data=VarPayload(var_id=var_id, value=None),
-                )
-            )
+        self._send(MsgType.MSG_GET_TARGETS)
 
     def set_control_mode(self, mode_value: int | ControlMode):
         if not self._connected or self._current_state != FOCState.FOC_STATE_RUN:

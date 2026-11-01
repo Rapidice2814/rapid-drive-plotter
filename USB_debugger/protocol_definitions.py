@@ -3,8 +3,7 @@ from enum import IntEnum, IntFlag
 SOF1_BIN = 0xAA
 SOF2_BIN = 0x55
 
-PROTOCOL_VERSION = 12
-SUPPORTED_PROTOCOL_VERSIONS = (6, 7, 8, 9, 10, 11, 12)
+PROTOCOL_VERSION = 14
 
 
 class CommandErrorCode(IntEnum):

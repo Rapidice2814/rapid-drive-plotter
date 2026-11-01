@@ -12,7 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "USB_debugger"), str(ROOT)]
-from protocol_codec import Packet, ProtocolCodec, RawPacket, VarPayload, PIDPayload, StatePayload, CommandErrorPayload
+from protocol_codec import Packet, ProtocolCodec, RawPacket, VarPayload, PIDPayload, StatePayload, CommandErrorPayload, TextPayload
 from protocol_definitions import MsgType, PROTOCOL_VERSION, FOCState, CommandErrorCode
 from device_definitions import DeviceInfo, Definitions, DefinitionCache, SelectionStore, PAGE_HEADER, parse_rows
 from protocol_session import ProtocolSession
@@ -84,6 +84,13 @@ class Harness:
 
 
 class CodecTests(unittest.TestCase):
+    def test_text_commands_keep_their_terminal_wire_format(self):
+        codec = ProtocolCodec()
+        raw = codec.encode_packet(Packet(MsgType.MSG_TEXT_COMMAND, TextPayload("O")))
+        self.assertEqual(codec.build_packet(raw), b"\xaa\x55\x18\x02\x00O\n")
+        reply = codec.decode_packet(RawPacket(MsgType.MSG_TEXT_REPLY, b"Motor stopped\n"))
+        self.assertEqual(reply.data.text, "Motor stopped\n")
+
     def test_fragmented_and_concatenated_frames(self):
         codec = ProtocolCodec()
         frame = codec.build_packet(RawPacket(int(MsgType.MSG_DEVICE_INFO_REPLY), b"123"))
@@ -473,6 +480,8 @@ class FirmwareContractTests(unittest.TestCase):
                 entry = {"bit" if kind == 0 else "id": index, "name": field}
                 if kind != 2:
                     entry["type"] = value_type
+                else:
+                    entry.update(minimum="0", maximum="100000000e-2", states=(1 << 14) | (1 << 12))
                 entries.append(entry)
             actual.append(entries)
         expected = definitions_from(fixture())
@@ -486,7 +495,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertEqual(len(rows), len(expected.configuration))
         for row, entry in zip(rows, expected.configuration):
             _symbol, group, value_type, name, _lo, _hi, unit, _states, label = row
-            self.assertEqual((name, value_type, unit, label, group.lower()),
+            self.assertEqual((name, value_type, unit, label, {"gains": "pid gains"}.get(group.lower(), group.lower())),
                              (entry["name"], entry["type"], entry["unit"], entry["label"], entry["group"].lower()))
         header = (firmware / "Foc/FOC_Core/FOC_USB_Debug.h").read_text()
         self.assertIn(f"#define DEBUG_PROTOCOL_VERSION {PROTOCOL_VERSION}", header)

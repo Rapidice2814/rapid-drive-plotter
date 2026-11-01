@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -40,3 +41,15 @@ LOG_FOLDER = Path(os.environ.get("RAPID_DRIVE_LOG_DIR") or (
     Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or
          Path.home() / ".local" / "share") / "RapidDrive" / "logs"
 ))
+
+# Portable motor/model presets, separate from logs and discovery caches.
+MOTOR_PRESET_FOLDER = Path(os.environ.get("RAPID_DRIVE_PRESET_DIR") or (
+    Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or
+         Path.home() / ".local" / "share") / "RapidDrive" / "motor-presets"
+))
+
+# Built-in templates are read-only in the plotter. Wheels install these data
+# files under the environment prefix; source/editable launches use the repo.
+BUNDLED_MOTOR_PRESET_FOLDER = PROJECT_ROOT / "motor-presets"
+if not BUNDLED_MOTOR_PRESET_FOLDER.is_dir():
+    BUNDLED_MOTOR_PRESET_FOLDER = Path(sys.prefix) / "share" / "rapid-drive-plotter" / "motor-presets"

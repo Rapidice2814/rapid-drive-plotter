@@ -205,7 +205,7 @@ class CalibrationUITests(unittest.TestCase):
         self.assertEqual(sent, [])  # No driver commands for ETA calculation.
 
     def test_dedicated_anticog_pid_controls_use_discovered_id_and_readback(self):
-        self.dock.set_definitions([], [{"id": 92, "name": "pid_anticogging"}])
+        self.dock.set_definitions([{"id": 92, "name": "pid_anticogging", "minimum": "0", "maximum": "1000000", "states": (1 << 14) | (1 << 12)}], [])
         self.dock.set_errors(active=0, latched=0)
         self.dock.set_state(FOCState.FOC_STATE_IDLE)
         self.assertEqual([field.value() for field in self.dock.anticog_gain_inputs], [10, 20, 0.2])
@@ -335,7 +335,7 @@ class CalibrationUITests(unittest.TestCase):
         from PySide6.QtWidgets import QMessageBox
         sent = []
         callbacks = []
-        def send(packet, *, completed):
+        def send(packet, *, completed, received=None):
             sent.append(packet)
             callbacks.append(completed)
         self.dock.send = send
@@ -392,39 +392,14 @@ class CalibrationUITests(unittest.TestCase):
         self.assertFalse(self.dock.setup_stop.isEnabled())
         self.assertFalse(button.isEnabled())
 
-    def test_motor_readback_uses_discovered_ids_and_updates_from_replies(self):
-        variables = [{"name": name, "id": 100 + i} for i, (name, _title, _unit) in enumerate(self.dock.RESULT_VARIABLES)]
-        pids = [{"name": "pid_current_q", "id": 72}, {"name": "pid_current_d", "id": 71}]
-        self.dock.set_definitions(variables, pids)
-        sent = []
-        self.dock.send = lambda packet, **_kwargs: sent.append(packet)
-        self.dock.read_setup_values()
-        self.assertEqual([p.data.var_id for p in sent if isinstance(p.data, VarPayload)], [100, 101, 102, 103])
-        self.assertEqual([p.data.controller_id for p in sent if isinstance(p.data, PIDPayload)], [71, 72])
-        self.window.on_reply(Packet(MsgType.MSG_VAR_REPLY, VarPayload(101, 0.25)))
-        self.window.on_reply(Packet(MsgType.MSG_PID_REPLY, PIDPayload(72, 1, 2, 0)))
-        self.assertIn("0.25 Ω", self.dock.variable_labels[variables[1]["name"]].text())
-        self.assertIn("Kp 1, Ki 2", self.dock.pid_labels["pid_current_q"].text())
-        # A short PI calculation may finish before the first state poll sees it.
-        sent.clear()
-        self.dock.setup_pending = True
-        self.dock.await_setup_state = True
-        self.dock.set_state(FOCState.FOC_STATE_IDLE)
-        self.assertFalse(self.dock.setup_pending)
-        self.assertEqual(len(sent), 7)
-        self.dock.set_definitions([], [])
-        self.assertFalse(self.dock.read_setup.isEnabled())
-        self.assertTrue(all("Not exposed" in label.text() for label in self.dock.variable_labels.values()))
-        self.assertFalse(self.dock.result_pids)
 
     def test_motor_readback_uses_configuration_when_debug_catalog_is_empty(self):
         definitions = self.h.session.definitions
         self.assertEqual(definitions.variables, [])
-        self.dock.set_definitions([], definitions.pids, definitions.configuration)
+        self.dock.set_definitions(definitions.pids, definitions.configuration)
         self.dock.read_setup_values()
         self.pump()
         self.assertFalse(self.h.errors)
-        self.assertFalse(self.dock.result_variables)
         self.assertEqual(len(self.dock.result_configurations), 4)
         self.assertIn("0.2 Ω", self.dock.variable_labels["flash_data.motor.phase_resistance"].text())
         self.assertIn("11", self.dock.variable_labels["flash_data.motor.pole_pairs"].text())

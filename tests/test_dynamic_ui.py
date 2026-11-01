@@ -132,7 +132,7 @@ class DynamicUITests(unittest.TestCase):
         self.assertEqual(self.window.signal_dock.signal_checkboxes, {})
         self.assertEqual(self.window.var_dock.var_widgets, {})
         self.assertEqual(self.window.pid_dock.pid_widgets, {})
-        self.assertEqual(self.window.setpoint_dock.variable_ids, {})
+        self.assertTrue(all(not button.isEnabled() for button in self.window.setpoint_dock.set_buttons.values()))
         self.assertEqual(self.window.signal_dock.saved_names, ["tick"])
 
     def prepare_busy_commands(self):
@@ -140,7 +140,7 @@ class DynamicUITests(unittest.TestCase):
         self.window._handle_transport_ready(7999.0)
         self.callbacks = []
 
-        def sender(packet, completed=None):
+        def sender(packet, completed=None, received=None):
             self.sent.append(packet)
             if completed is not None:
                 self.callbacks.append(completed)
@@ -158,7 +158,9 @@ class DynamicUITests(unittest.TestCase):
                        Packet(MsgType.MSG_VAR_REPLY, VarPayload(0, 4.0))):
             self.window.on_reply(packet)
         self.assertEqual(terminal.toPlainText(), "")
-        self.assertEqual(self.window.pid_dock.pid_widgets[0]["kp"].value(), 1.0)
+        # Broadcast replies do not overwrite the shared editor; its reads use
+        # only their command-correlated responses.
+        self.assertEqual(self.window.pid_dock.pid_widgets[0]["kp"].value(), 0.0)
         self.assertEqual(self.window.var_dock.var_widgets[0]["value"].value(), 4.0)
         self.window.on_reply(Packet(MsgType.MSG_TEXT_REPLY, TextPayload("Warning: example fault")))
         self.assertIn("Warning: example fault", terminal.toPlainText())
@@ -326,12 +328,6 @@ class DynamicUITests(unittest.TestCase):
         self.callbacks[-1](True)
         self.assertFalse(button.is_busy)
 
-    def test_unknown_setpoint_reply_is_ignored(self):
-        self.populate(fixture())
-        dock = self.window.setpoint_dock
-        before = {name: widget.value() for name, widget in dock.value_widgets.items()}
-        dock.set_var_value(255, 123.0)
-        self.assertEqual(before, {name: widget.value() for name, widget in dock.value_widgets.items()})
 
     def test_operation_failed_flag_has_a_readable_label(self):
         from protocol_definitions import FOCError

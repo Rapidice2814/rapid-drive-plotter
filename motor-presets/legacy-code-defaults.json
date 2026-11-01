@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "name": "BE4108-380KV (11 pole pairs)",
+  "parameters": {
+    "limits.max_dq_current": 15.0,
+    "limits.max_dq_voltage": 4.618802153517007,
+    "limits.vbus_overvoltage_trip_level": 27.0,
+    "limits.vbus_undervoltage_trip_level": 20.0,
+    "limits.ibus_overcurrent_trip_level": 3.0,
+    "limits.motor_temp_trip_level": 60.0,
+    "limits.mosfet_temp_trip_level": 80.0,
+    "motor.pole_pairs": 11,
+    "motor.phase_resistance": 0.2,
+    "motor.phase_inductance": 2.5e-05,
+    "motor.torque_constant": 0.021763157894736842,
+    "controller.current_control_bandwidth": 500.0,
+    "controller.current_PID_FF_enabled": 0,
+    "encoder.calibration_current": 5.0
+  },
+  "pids": {
+    "pid_speed": {
+      "kp": 0.1,
+      "ki": 5,
+      "kd": 0
+    },
+    "pid_position": {
+      "kp": 1,
+      "ki": 5,
+      "kd": 0.5
+    },
+    "pid_anticogging": {
+      "kp": 10,
+      "ki": 20,
+      "kd": 0.2
+    }
+  }
+}

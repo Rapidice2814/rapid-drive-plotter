@@ -191,7 +191,10 @@
         0.5,
         18,
         0.001
-      ]
+      ],
+      "minimum": "0",
+      "maximum": "100000000e-2",
+      "states": 20480
     },
     {
       "name": "pid_current_q",
@@ -199,7 +202,10 @@
         0.45,
         16,
         0.001
-      ]
+      ],
+      "minimum": "0",
+      "maximum": "100000000e-2",
+      "states": 20480
     },
     {
       "name": "pid_speed",
@@ -207,7 +213,10 @@
         0.08,
         0.015,
         0
-      ]
+      ],
+      "minimum": "0",
+      "maximum": "100000000e-2",
+      "states": 20480
     },
     {
       "name": "pid_position",
@@ -215,7 +224,10 @@
         1.2,
         0.1,
         0
-      ]
+      ],
+      "minimum": "0",
+      "maximum": "100000000e-2",
+      "states": 20480
     },
     {
       "name": "pid_anticogging",
@@ -223,7 +235,10 @@
         10,
         20,
         0.2
-      ]
+      ],
+      "minimum": "0",
+      "maximum": "100000000e-2",
+      "states": 20480
     }
   ],
   "configuration": [

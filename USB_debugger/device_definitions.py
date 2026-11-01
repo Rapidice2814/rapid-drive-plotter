@@ -1,16 +1,15 @@
 """Runtime device metadata, canonical fingerprints, and persistent discovery cache."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
 import struct
 import tempfile
 
-from protocol_definitions import SUPPORTED_PROTOCOL_VERSIONS
+from protocol_definitions import PROTOCOL_VERSION
 
 KINDS = ("signals", "variables", "pids", "can_cyclic", "configuration")
-LEGACY_INFO_LAYOUT = struct.Struct("<BBBBHHHBBIHHQB")
-INFO_LAYOUT = struct.Struct("<BBBBHHHBBIHHQBH")
+INFO_LAYOUT = struct.Struct("<BBBBHHHBBIHHQBHHB")
 PAGE_HEADER = struct.Struct("<BHHH")
 CACHE_FORMAT = 1
 
@@ -31,28 +30,24 @@ class DeviceInfo:
 
     @classmethod
     def decode(cls, payload):
-        if not payload or payload[0] not in SUPPORTED_PROTOCOL_VERSIONS:
-            raise ValueError("Incompatible protocol; this plotter supports USB protocols 6 through 11")
-        layout = LEGACY_INFO_LAYOUT if payload[0] == 6 else INFO_LAYOUT
-        if len(payload) != (34 if payload[0] >= 8 else layout.size):
+        if not payload or payload[0] != PROTOCOL_VERSION:
+            raise ValueError("Incompatible protocol; install matching firmware and plotter")
+        if len(payload) != INFO_LAYOUT.size:
             raise ValueError("Invalid device info length")
-        v = layout.unpack(payload[:layout.size])
-        counts = tuple(v[4:7]) + ((v[-1],) if v[0] >= 7 else ())
-        info = cls(v[0], tuple(v[1:4]), counts, *(v[7:-1] if v[0] >= 7 else v[7:]))
-        if payload[0] >= 8:
-            from dataclasses import replace
-            if payload[33] > 1:
-                raise ValueError("Unknown device capabilities")
-            info = replace(info, counts=counts + (struct.unpack_from("<H", payload, 31)[0],), debug_writes=bool(payload[33]))
+        v = INFO_LAYOUT.unpack(payload)
+        if v[16] > 1:
+            raise ValueError("Unknown device capabilities")
+        info = cls(v[0], tuple(v[1:4]), tuple(v[4:7]) + (v[14], v[15]),
+                   *v[7:14], debug_writes=bool(v[16]))
         info.validate()
         return info
 
     def validate(self):
-        if self.protocol not in SUPPORTED_PROTOCOL_VERSIONS:
+        if self.protocol != PROTOCOL_VERSION:
             raise ValueError("Incompatible protocol; install matching firmware and plotter")
         if self.status:
             raise ValueError("Driver definitions are invalid (invalid or duplicate names)")
-        if len(self.counts) != (3 if self.protocol == 6 else 4 if self.protocol == 7 else 5) or not 1 <= self.counts[0] <= 256 or any(not 0 <= n <= 256 for n in self.counts):
+        if len(self.counts) != 5 or not 1 <= self.counts[0] <= 256 or any(not 0 <= n <= 256 for n in self.counts):
             raise ValueError("Invalid definition counts")
         if self.mask_bytes != (self.counts[0] + 7) // 8:
             raise ValueError("Invalid signal-mask width")
@@ -64,10 +59,11 @@ class DeviceInfo:
             raise ValueError("Invalid packet limits")
 
     def encode(self):
-        base = LEGACY_INFO_LAYOUT.pack(self.protocol, *self.firmware, *self.counts[:3],
+        return INFO_LAYOUT.pack(self.protocol, *self.firmware, *self.counts[:3],
                                 self.mask_bytes, self.max_signals, self.sample_rate,
-                                self.max_command, self.max_reply, self.fingerprint, self.status)
-        return base + (struct.pack("<H", self.counts[3]) if self.protocol >= 7 else b"") + (struct.pack("<HB", self.counts[4], self.debug_writes) if self.protocol >= 8 else b"")
+                                self.max_command, self.max_reply, self.fingerprint, self.status,
+                                self.counts[3], self.counts[4], self.debug_writes)
+
 
 
 def parse_rows(kind, text):
@@ -78,6 +74,12 @@ def parse_rows(kind, text):
     result = []
     for line in text.splitlines():
         fields = line.split("\t")
+        if kind == 2:
+            if len(fields) != 5:
+                raise ValueError("Malformed PID descriptor")
+            result.append(dict(id=int(fields[0]), name=fields[1], minimum=fields[2],
+                               maximum=fields[3], states=int(fields[4])))
+            continue
         if kind == 4:
             if len(fields) != 10:
                 raise ValueError("Malformed configuration descriptor")
@@ -99,13 +101,11 @@ class Definitions:
     signals: list[dict]
     variables: list[dict]
     pids: list[dict]
-    can_cyclic: list[dict] | None = None
-    configuration: list[dict] | None = None
+    can_cyclic: list[dict] = field(default_factory=list)
+    configuration: list[dict] = field(default_factory=list)
 
     def lists(self):
-        base = (self.signals, self.variables, self.pids)
-        result = base if self.can_cyclic is None else base + (self.can_cyclic,)
-        return result if self.configuration is None else result + (self.configuration,)
+        return (self.signals, self.variables, self.pids, self.can_cyclic, self.configuration)
 
     def validate(self, info=None):
         for kind, entries in enumerate(self.lists()):
@@ -126,6 +126,9 @@ class Definitions:
                 seen.add(name)
                 if kind < 2 and entry.get("type") not in ("f", "i32", "u32"):
                     raise ValueError("Unknown primitive type")
+                if kind == 2:
+                    from pid_protocol import validate_pid_descriptor
+                    validate_pid_descriptor(entry)
                 if kind == 4:
                     from configuration_protocol import validate_descriptor
                     validate_descriptor(entry)
@@ -149,6 +152,9 @@ class Definitions:
     def text(self, kind):
         lines = []
         for entry in self.lists()[kind]:
+            if kind == 2:
+                lines.append("\t".join(str(entry[key]) for key in ("id", "name", "minimum", "maximum", "states")) + "\n")
+                continue
             if kind == 4:
                 lines.append("\t".join(str(entry[key]) for key in
                     ("id", "group_id", "group", "type", "minimum", "maximum", "unit", "states", "name", "label")) + "\n")

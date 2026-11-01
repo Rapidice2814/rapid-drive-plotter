@@ -14,14 +14,20 @@ python -m venv .venv
 ```
 
 The application package includes the simulator and requires no firmware source
-checkout. The application supports USB protocol versions 6, 7, 8 and 9. It retains protocol
-3 command IDs and successful reply layouts, but uses structured errors containing
-the originating command, numeric reason, and driver-provided explanation.
-CAN catalog discovery requires version 7; protocol-6 connections remain supported
-without guessed CAN cyclic entries. Firmware version polling uses
-device info; there are no separate USB version commands.
+checkout. The application requires USB protocol 14 and a matching firmware build.
+Other protocol versions are rejected before discovery. Device info reports
+firmware version, capabilities and all five definition catalogs.
 
 ## Connection
+
+If the installed firmware has a different protocol version, select its physical
+serial port and use **Enter bootloader** below **Disconnect**. This action is
+available without a successful connection or device discovery. It closes the
+normal connection, stops logging, requests STOP, waits for IDLE/ERROR, and sends
+the bootloader request over the selected port. The status shows acceptance,
+rejection or timeout. Connect again after flashing matching firmware. The
+recovery action is unavailable for the simulator.
+
 
 Calibration lists the driver's available angle sources, correction status and
 calibration progress. Source changes require stationary IDLE/ERROR and invalidate
@@ -33,13 +39,13 @@ external AS5047P, each via quadrature or SPI DMA. Source IDs are saved in flash;
 select a source in Calibration, align it, then save settings to persist the choice.
 External quadrature uses the shared ENC_A/ENC_B inputs (PB4/PB5); only one sensor
 may drive these pins.
-The firmware's flash format 2 rejects older settings records rather than
-interpreting their old layout. Back up settings before a firmware upgrade.
+The firmware's flash format 3 accepts only the current record layout. After a
+format change, reapply a motor preset and recalibrate the driver.
 
 Connection setup reads device info, stops logging, and discovers the signals,
-variables, PID controllers, and CAN cyclic messages (protocol 7). Python contains
+variables, PID controllers, and CAN cyclic messages. Python contains
 no built-in device catalogs for these.
-Protocol 8 also discovers configuration groups, field types, bounds, units and
+Discovery also includes configuration groups, field types, bounds, units and
 write-state permissions. This metadata is included in the persistent cache and
 fingerprint; changing a driver-side bound refreshes the generated controls.
 The controls are built from the discovered definitions, then the selected mask
@@ -62,7 +68,8 @@ not completion of the flash operation itself.
 
 Routine ACKs and PID/variable reply dumps are not printed in the terminal.
 Structured errors and driver text remain visible, including warnings,
-diagnostics, and responses to manually entered text commands.
+diagnostics, and responses to manually entered text commands. Text commands
+remain available in the Command Line panel for development builds.
 
 The fault displays include the shared Operation failed flag (bit 15,
 0x00008000) for failed calibration, tuning, identification, and storage actions.
@@ -72,37 +79,40 @@ clear; a present fault immediately relatches. Recovery does not resume RUN.
 ## Production configuration and debugging
 
 The Configuration tab generates grouped forms from the connected driver's
-metadata. Current groups are Limits, Motor, Controller, and Encoder
-calibration D current. Read a group, edit one or more fields, then apply its edits
-to RAM. The firmware validates the complete candidate group and applies all edits
+metadata. Current groups are Limits, Motor, Controller, Encoder calibration
+D current. PID gains use their dedicated discovered registry and commands. Use
+**Read from driver**, edit values, then **Apply values to RAM**. These global
+actions cover all configuration groups and PID controllers. The firmware
+validates the complete candidate group and applies all edits
 or none; rejection retains the local edits and reports the error in the terminal.
 Successful writes are read back. Saving to flash remains a separate explicit
 action in Basics/Calibration. Configuration changes can invalidate calibration
 tables; changing pole pairs/direction also invalidates encoder alignment/correction.
 Current-control bandwidth changes do not automatically retune the current PI gains.
 
-Limits allow stationary IDLE/ERROR; other groups require stationary IDLE. Hover
-over disabled controls for an explanation. Absolute bounds are defined by
+Local values can be edited, reset, and saved to presets in every motor state.
+Applying to RAM is blocked in RUN and other active states: limits allow
+stationary IDLE/ERROR, while other groups and PID gains require stationary IDLE.
+The driver's advertised permissions remain authoritative. Hover over the
+disabled Apply button for an explanation. Absolute bounds are defined by
 `CONFIG_ABS_*` in the firmware's `FOC_Config.h`, not a Python settings catalog.
 Firmware checks state, finite/native values, physical bounds and related-field
 constraints. Advertised ranges do not guarantee controller tuning stability.
 
-Setpoints use dedicated validated target/readback commands on protocol 8 and do
+Setpoints use dedicated validated target/readback commands and do
 not write debug variables. Target writes require fault-free RUN and the matching
 control mode; d/q current magnitude must fit the configured current limit. PID
 updates retain their dedicated command with firmware-side gain/state validation.
 Existing node-ID, CAN rate, encoder, calibration and storage controls remain
-dedicated operations. Older firmware can connect, but validated configuration
-and target writes are unavailable; the plotter does not fall back to unsafe raw
-writes for normal target operation.
+dedicated operations.
 
 Variables is a debug-only view. Raw writes bypass functional validation in
-development builds. Non-debug firmware disables MSG_SET_VAR and legacy text
-commands by default; it advertises this capability and the plotter disables the
+development builds. Non-debug firmware disables MSG_SET_VAR and text commands
+by default; it advertises this capability and the plotter disables the
 write controls. Debug reads and telemetry remain available. Production controls
 must not use the Variables panel as an alternate path around validation.
-The current driver exposes no debug-only variables; its former 19 entries are
-covered by Configuration and dedicated target commands. The Variables tab
+The current driver exposes no debug-only variables. Functional settings and
+targets use Configuration and dedicated commands. The Variables tab
 explains this empty state and remains available for future debug fields.
 Calibration parameter readbacks use discovered configuration fields, and
 Setpoints/target telemetry do not depend on debug-variable definitions.
@@ -237,12 +247,9 @@ disabled during maintenance; flash actions from ERROR return to ERROR while
 faults remain, rather than resuming RUN. The simulator supports the same
 ERROR-state permissions and preserves its active/latched fault masks.
 
-The plotter supports protocols 6 through 11. Protocol 6 has three catalogs,
-protocol 7 adds CAN cyclic discovery, and protocols 8–11 include validated
-configuration and targets. Protocol 11 uses the physical encoder source selector;
-retired command IDs 0x3C–0x3F are not issued. Unknown protocols are rejected. Wire layout, discovery
-grammar, or primitive encoding changes require explicit protocol support;
-firmware release/version numbers alone do not determine compatibility.
+The plotter supports only USB protocol 14, with one device-info layout and five
+catalogs. Other versions are rejected; there are no backward compatibility paths.
+Firmware and plotter must be updated together when the protocol changes.
 Adding, removing, or reordering list entries changes the fingerprint and does
 not require a protocol bump. The firmware repository's `docs/usb-protocol.md`
 documents the discovery wire format.
@@ -253,8 +260,7 @@ for signals/variables/PIDs also covers this list. New entries, renames or orderi
 changes invalidate the cache and are discovered on reconnect without editing
 plotter source. The simulator's catalog lives in `Serial_Simulator/definitions.json`,
 not in production Python constants. Period tooltips use the reported driver tick
-rate; zero disables a cyclic message. A legacy driver or a driver advertising an
-empty CAN list shows an explanatory message while node-ID controls remain usable.
+rate; zero disables a cyclic message. A driver advertising an empty CAN list shows an explanatory message while node-ID controls remain usable.
 
 Calibration progress bars include a plotter-only observed elapsed time and
 remaining-time estimate. It extrapolates existing progress against the local
@@ -294,3 +300,87 @@ calibration progress/ETA is shown while those steps run. Firmware protocol 12 is
 required. New tables remain disabled until explicitly enabled, and anti-cogging
 results still need a separate flash save. Enabling encoder correction after
 anti-cogging invalidates that table; rerun anti-cogging in the desired coordinates.
+
+## Motor / model presets
+
+Configuration (also inside Motor Setup) includes a preset dropdown. Selecting a
+preset loads it directly into the editor. **Read from driver** fills the editor
+with all current RAM settings and PID gains without saving a file. **Save preset…**
+saves editor values to an existing user preset or creates a new user preset;
+the dialog lets you choose the destination, name, and optional fields. Motor parameters,
+all current/voltage/bus/temperature limits, bandwidth, calibration current and
+all five PID gain sets can be included. Scalar settings are stored under
+`parameters`; PID gains are stored under `pids`, keyed by controller name
+and `kp`/`ki`/`kd`. Each PID controller is optional as a whole: the save dialog
+has one checkbox per controller and saves Kp, Ki and Kd together. Unsaved editor values are
+included when saving; saving a preset does not read or write the driver.
+
+The selected preset is the comparison reference. Orange names indicate values
+that differ from that preset, including after **Read from driver**. Controller
+names also turn orange when any of their gains differ, with a reset arrow next
+to the name to restore all gains. Individual gain reset arrows remain available.
+Names of fields and PID controllers omitted from the preset are grey; loading the preset leaves those values
+unchanged. This applies to each individual PID gain, including explicit zero
+gains, which are included rather than omitted. Omitted fields remain editable.
+
+The reset arrow restores an included field's preset value in the editor.
+For an omitted field, it undoes a local edit using the last read/loaded value.
+Without a selected preset, comparisons and resets use the last read/loaded values.
+Reading or choosing another preset asks before replacing local edits; differences
+from a preset alone do not trigger that confirmation. The Apply button reflects
+pending changes to driver RAM independently of the preset comparison colors.
+
+Saving updates the selected comparison reference to the saved preset. Omitted
+scalar fields and PID controllers stay unchecked unless explicitly edited locally
+or checked there. A selected PID always saves its complete gain set; all three
+values must be known. Existing partial PID objects can still be loaded, but saving
+their controller includes the remaining editor gains as well. Reading the driver
+does not automatically add unrelated fields or controllers to the preset.
+
+Review the settings, then **Apply values to RAM**. There are no per-group
+read/apply buttons in Configuration. Omitted fields retain their driver values. Unknown
+keys are reported and skipped. Application is sequential and atomic per group;
+a failure stops later writes, while earlier accepted groups remain in RAM.
+For each included PID, the plotter reads current gains, merges only supplied
+values, writes the complete set, and verifies readback. Omitted gains stay
+unchanged; explicit zero clears that gain. Use the driver's existing Save to
+Flash action to persist its settings.
+
+The dropdown includes two preset sources:
+
+- Built-in templates from the project's `motor-presets` folder, marked **(built-in)**.
+  These can be loaded and edited, but the plotter cannot overwrite their files.
+  Saving from a built-in template defaults to a new user preset named **(custom)**.
+- Writable user presets in a separate persistent folder:
+`%LOCALAPPDATA%/RapidDrive/motor-presets` on Windows, or
+`$XDG_DATA_HOME/RapidDrive/motor-presets` (`~/.local/share` fallback) elsewhere.
+
+Set `RAPID_DRIVE_PRESET_DIR` to choose another user folder; it must be outside the
+built-in folder. The UI displays the user folder path. Existing user copies remain
+separate and editable, even if they share a name with a built-in preset. Editing
+a built-in JSON file directly takes effect when the plotter restarts. Installed
+wheels include the built-in templates under the Python environment's
+`share/rapid-drive-plotter/motor-presets` folder.
+The offline Save preset dialog accepts an object containing `parameters` and/or
+`pids`; connect a driver for the discovered optional-field form.
+
+Presets store stable parameter names, not session IDs. Every parameter is
+optional; zero clears a numeric setting. Generic firmware keeps motor output
+disabled until an operation's required settings are configured or measured.
+Zero never disables an operating protection. Only current-format driver flash records are accepted; reapply a preset and
+recalibrate after a format change. The simulator starts with a commissioned
+example configuration for UI/protocol demonstrations.
+
+Encoder hardware selection, per-device calibration tables/offsets, CAN identity
+and live targets stay in their dedicated controls rather than model presets.
+
+Preset files use schema version 2; earlier layouts are not loaded. PID registry
+metadata advertises shared gain bounds and writable states, included in discovery
+fingerprints. The PID tab allows local editing and reading in any connected
+state, while applying gains requires IDLE and the driver's permission. Configuration and
+the PID Controllers tab use the same PID editor and GET_PID/SET_PID workflow.
+The PID Controllers tab has **Read PID gains** and **Apply edited gains to RAM**;
+Configuration uses its global actions for the same editor. Omitted preset gains
+stay unchanged and are merged from a fresh driver read at apply time. Every
+write is verified by another read. Applying to RAM does not save a preset or
+persist settings to driver flash.

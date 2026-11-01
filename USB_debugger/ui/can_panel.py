@@ -103,7 +103,7 @@ class CanInterfaceDock(QDockWidget):
         self.sample_rate = sample_rate
         if entries is None:
             self.discovery_label.setText(
-                "This driver does not advertise CAN cyclic definitions (USB protocol 6). "
+                "CAN cyclic definitions are not available. "
                 "Node ID controls remain available. Update firmware for cyclic-rate discovery.")
         elif not entries:
             self.discovery_label.setText("This driver advertises no CAN cyclic messages.")
